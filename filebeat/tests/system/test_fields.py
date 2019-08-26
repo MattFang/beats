@@ -54,7 +54,7 @@ class Test(BaseTest):
 
         output = self.read_output()
         doc = output[0]
-        print doc
+        print(doc)
         assert doc["hello"] == "world"
         assert doc["type"] == "log2"
         assert doc["timestamp"] == 2
@@ -79,6 +79,6 @@ class Test(BaseTest):
 
         output = self.read_output()
         doc = output[0]
-        assert doc["beat.name"] == "testShipperName"
-        assert doc["beat.hostname"] == socket.gethostname()
+        assert doc["host.name"] == "testShipperName"
+        assert doc["agent.hostname"] == socket.gethostname()
         assert "fields" not in doc

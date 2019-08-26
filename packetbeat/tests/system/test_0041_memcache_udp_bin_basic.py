@@ -1,7 +1,7 @@
 from packetbeat import BaseTest
 
-
 import pprint
+import six
 
 pp = pprint.PrettyPrinter()
 
@@ -11,12 +11,12 @@ def pretty(*k, **kw):
 
 
 class Test(BaseTest):
+
     def _run(self, pcap):
         self.render_config_template(
             memcache_udp_transaction_timeout=10
         )
         self.run_packetbeat(pcap=pcap,
-                            extra_args=['-waitstop', '1'],
                             debug_selectors=["memcache", "udp", "publish"])
         objs = self.read_output()
         self.assert_common(objs)
@@ -24,13 +24,13 @@ class Test(BaseTest):
 
     def assert_common(self, objs):
         # check client ip are not mixed up
-        assert all(o['client_ip'] == '192.168.188.37' for o in objs)
-        assert all(o['ip'] == '192.168.188.38' for o in objs)
-        assert all(o['port'] == 11211 for o in objs)
+        assert all(o['client.ip'] == '192.168.188.37' for o in objs)
+        assert all(o['server.ip'] == '192.168.188.38' for o in objs)
+        assert all(o['server.port'] == 11211 for o in objs)
 
         # check transport layer always udp
         assert all(o['type'] == 'memcache' for o in objs)
-        assert all(o['transport'] == 'udp' for o in objs)
+        assert all(o['network.transport'] == 'udp' for o in objs)
         assert all(o['memcache.protocol_type'] == 'binary' for o in objs)
 
     def test_store(self):
@@ -63,10 +63,8 @@ class Test(BaseTest):
         assert sets['k1']['memcache.request.bytes'] == 100
         assert sets['k2']['memcache.request.bytes'] == 20
         assert sets['k3']['memcache.request.bytes'] == 10
-        assert all(o['memcache.request.opcode'] == 'SetQ'
-                   for o in sets.itervalues())
-        assert all(o['memcache.request.quiet']
-                   for o in sets.itervalues())
+        assert all(o['memcache.request.opcode'] == 'SetQ' for o in six.itervalues(sets))
+        assert all(o['memcache.request.quiet'] for o in six.itervalues(sets))
 
     def test_delete(self):
         objs = self._run('memcache/memcache_bin_udp_delete.pcap')

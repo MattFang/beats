@@ -1,5 +1,6 @@
 from packetbeat import BaseTest
 
+import six
 
 # import pprint
 #
@@ -11,6 +12,7 @@ from packetbeat import BaseTest
 
 
 class Test(BaseTest):
+
     def _run(self, pcap):
         self.render_config_template()
         self.run_packetbeat(pcap=pcap,
@@ -21,13 +23,13 @@ class Test(BaseTest):
 
     def assert_common(self, objs):
         # check client ip are not mixed up
-        assert all(o['client_ip'] == '192.168.188.37' for o in objs)
-        assert all(o['ip'] == '192.168.188.38' for o in objs)
-        assert all(o['port'] == 11211 for o in objs)
+        assert all(o['client.ip'] == '192.168.188.37' for o in objs)
+        assert all(o['server.ip'] == '192.168.188.38' for o in objs)
+        assert all(o['server.port'] == 11211 for o in objs)
 
         # check transport layer always tcp
         assert all(o['type'] == 'memcache' for o in objs)
-        assert all(o['transport'] == 'tcp' for o in objs)
+        assert all(o['network.transport'] == 'tcp' for o in objs)
         assert all(o['memcache.protocol_type'] == 'text' for o in objs)
 
     def test_store_load(self):
@@ -67,8 +69,7 @@ class Test(BaseTest):
         assert sets['k1']['memcache.request.bytes'] == 100
         assert sets['k2']['memcache.request.bytes'] == 20
         assert sets['k3']['memcache.request.bytes'] == 10
-        assert all(o['memcache.response.type'] == 'Success'
-                   for o in sets.itervalues())
+        assert all(o['memcache.response.type'] == 'Success' for o in six.itervalues(sets))
 
         get = objs[3]
         assert get['memcache.request.keys'] == ['x', 'k1', 'k2', 'k3', 'y']

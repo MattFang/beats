@@ -1,34 +1,51 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package memcache
 
 // Memcache plugin initialization, message/transaction types and transaction initialization/publishing.
 
 import (
 	"encoding/json"
-	"expvar"
 	"math"
 	"time"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/monitoring"
 
 	"github.com/elastic/beats/packetbeat/protos"
 	"github.com/elastic/beats/packetbeat/protos/applayer"
-	"github.com/elastic/beats/packetbeat/publish"
 )
 
 // memcache types
-type Memcache struct {
-	Ports   protos.PortsConfig
-	results publish.Transactions
+type memcache struct {
+	ports   protos.PortsConfig
+	results protos.Reporter
 	config  parserConfig
 
 	udpMemcache
 	tcpMemcache
 
-	handler MemcacheHandler
+	handler memcacheHandler
 }
 
-type MemcacheHandler interface {
+type memcacheHandler interface {
 	onTransaction(t *transaction)
 }
 
@@ -59,19 +76,19 @@ type message struct {
 	isQuiet bool
 
 	// values
-	keys         []memcacheString
-	flags        uint32
-	exptime      uint32
-	value        uint64
-	value2       uint64
-	ivalue       int64
-	ivalue2      int64
-	str          memcacheString
-	data         memcacheData
-	bytes        uint
-	bytesLost    uint
-	values       []memcacheData
-	count_values uint32
+	keys        []memcacheString
+	flags       uint32
+	exptime     uint32
+	value       uint64
+	value2      uint64
+	ivalue      int64
+	ivalue2     int64
+	str         memcacheString
+	data        memcacheData
+	bytes       uint
+	bytesLost   uint
+	values      []memcacheData
+	countValues uint32
 
 	stats []memcacheStat
 }
@@ -101,9 +118,9 @@ type memcacheStat struct {
 var debug = logp.MakeDebug("memcache")
 
 var (
-	unmatchedRequests      = expvar.NewInt("memcache.unmatched_requests")
-	unmatchedResponses     = expvar.NewInt("memcache.unmatched_responses")
-	unfinishedTransactions = expvar.NewInt("memcache.unfinished_transactions")
+	unmatchedRequests      = monitoring.NewInt(nil, "memcache.unmatched_requests")
+	unmatchedResponses     = monitoring.NewInt(nil, "memcache.unmatched_responses")
+	unfinishedTransactions = monitoring.NewInt(nil, "memcache.unfinished_transactions")
 )
 
 func init() {
@@ -112,10 +129,10 @@ func init() {
 
 func New(
 	testMode bool,
-	results publish.Transactions,
+	results protos.Reporter,
 	cfg *common.Config,
 ) (protos.Plugin, error) {
-	p := &Memcache{}
+	p := &memcache{}
 	config := defaultConfig
 	if !testMode {
 		if err := cfg.Unpack(&config); err != nil {
@@ -130,7 +147,7 @@ func New(
 }
 
 // Called to initialize the Plugin
-func (mc *Memcache) init(results publish.Transactions, config *memcacheConfig) error {
+func (mc *memcache) init(results protos.Reporter, config *memcacheConfig) error {
 	debug("init memcache plugin")
 
 	mc.handler = mc
@@ -138,13 +155,13 @@ func (mc *Memcache) init(results publish.Transactions, config *memcacheConfig) e
 		return err
 	}
 
-	mc.udpConnections = make(map[common.HashableIpPortTuple]*udpConnection)
+	mc.udpConnections = make(map[common.HashableIPPortTuple]*udpConnection)
 	mc.results = results
 	return nil
 }
 
-func (mc *Memcache) setFromConfig(config *memcacheConfig) error {
-	if err := mc.Ports.Set(config.Ports); err != nil {
+func (mc *memcache) setFromConfig(config *memcacheConfig) error {
+	if err := mc.ports.Set(config.Ports); err != nil {
 		return err
 	}
 
@@ -155,13 +172,13 @@ func (mc *Memcache) setFromConfig(config *memcacheConfig) error {
 		mc.config.maxBytesPerValue = config.MaxBytesPerValue
 	}
 
-	mc.config.parseUnkown = config.ParseUnknown
+	mc.config.parseUnknown = config.ParseUnknown
 
-	mc.udpConfig.transTimeout = config.UdpTransactionTimeout
+	mc.udpConfig.transTimeout = config.UDPTransactionTimeout
 	mc.tcpConfig.tcpTransTimeout = config.TransactionTimeout
 
 	debug("transaction timeout: %v", config.TransactionTimeout)
-	debug("udp transaction timeout: %v", config.UdpTransactionTimeout)
+	debug("udp transaction timeout: %v", config.UDPTransactionTimeout)
 	debug("maxValues = %v", mc.config.maxValues)
 	debug("maxBytesPerValue = %v", mc.config.maxBytesPerValue)
 
@@ -169,20 +186,22 @@ func (mc *Memcache) setFromConfig(config *memcacheConfig) error {
 }
 
 // GetPorts return the configured memcache application ports.
-func (mc *Memcache) GetPorts() []int {
-	return mc.Ports.Ports
+func (mc *memcache) GetPorts() []int {
+	return mc.ports.Ports
 }
 
-func (mc *Memcache) finishTransaction(t *transaction) error {
+func (mc *memcache) finishTransaction(t *transaction) error {
 	mc.handler.onTransaction(t)
 	return nil
 }
 
-func (mc *Memcache) onTransaction(t *transaction) {
-	event := common.MapStr{}
-	t.Event(event)
+func (mc *memcache) onTransaction(t *transaction) {
+	event := beat.Event{
+		Fields: common.MapStr{},
+	}
+	t.Event(&event)
 	debug("publish event: %s", event)
-	mc.results.PublishTransaction(event)
+	mc.results(event)
 }
 
 func newMessage(ts time.Time) *message {
@@ -197,7 +216,7 @@ func (m *message) String() string {
 
 func (m *message) Event(event common.MapStr) error {
 	if m.command == nil {
-		return ErrInvalidMessage
+		return errInvalidMessage
 	}
 	return m.command.event(m, event)
 }
@@ -209,12 +228,13 @@ func (m *message) SubEvent(
 	if m == nil {
 		return nil, nil
 	}
-	msg_event := common.MapStr{}
-	event[name] = msg_event
-	return msg_event, m.Event(msg_event)
+
+	msgEvent := common.MapStr{}
+	event[name] = msgEvent
+	return msgEvent, m.Event(msgEvent)
 }
 
-func tryMergeResponses(mc *Memcache, prev, msg *message) (bool, error) {
+func tryMergeResponses(mc *memcache, prev, msg *message) (bool, error) {
 	if msg != nil {
 		msg.isComplete = checkResponseComplete(msg)
 	}
@@ -224,39 +244,39 @@ func tryMergeResponses(mc *Memcache, prev, msg *message) (bool, error) {
 	}
 
 	if prev.isBinary != msg.isBinary {
-		return false, ErrMixOfBinaryAndText
+		return false, errMixOfBinaryAndText
 	}
 
 	if !msg.isBinary {
 		// merge text protocol value/stats message
-		if prev.command.code == MemcacheResValue {
+		if prev.command.code == memcacheResValue {
 			return mergeValueMessages(mc, prev, msg)
-		} else if prev.command.code == MemcacheResStat {
+		} else if prev.command.code == memcacheResStat {
 			return mergeStatsMessages(mc, prev, msg)
 		}
 
 		return false, nil
-	} else {
-		// merge binary protocol stats messages
-		if prev.opcode != opcodeStat || msg.opcode != opcodeStat {
-			return false, nil
-		}
-		if prev.opaque != msg.opaque {
-			return false, nil
-		}
-
-		return mergeStatsMessages(mc, prev, msg)
 	}
+
+	// merge binary protocol stats messages
+	if prev.opcode != opcodeStat || msg.opcode != opcodeStat {
+		return false, nil
+	}
+	if prev.opaque != msg.opaque {
+		return false, nil
+	}
+
+	return mergeStatsMessages(mc, prev, msg)
 }
 
-func mergeValueMessages(mc *Memcache, prev, msg *message) (bool, error) {
+func mergeValueMessages(mc *memcache, prev, msg *message) (bool, error) {
 	debug("try to merge value messages")
 
-	valueMessages := prev.command.code == MemcacheResValue &&
-		(msg.command.code == MemcacheResValue ||
-			msg.command.code == MemcacheResEnd)
+	valueMessages := prev.command.code == memcacheResValue &&
+		(msg.command.code == memcacheResValue ||
+			msg.command.code == memcacheResEnd)
 	if !valueMessages {
-		err := ErrExpectedValueForMerge
+		err := errExpectedValueForMerge
 		debug("%v", err)
 		return false, nil
 	}
@@ -265,8 +285,8 @@ func mergeValueMessages(mc *Memcache, prev, msg *message) (bool, error) {
 	prev.bytes += msg.bytes
 	prev.keys = append(prev.keys, msg.keys...)
 	prev.AddNotes(msg.Notes...)
-	prev.count_values += msg.count_values
-	if msg.command.code == MemcacheResValue {
+	prev.countValues += msg.countValues
+	if msg.command.code == memcacheResValue {
 		delta := 0
 		if mc.config.maxValues < 0 {
 			delta = len(msg.values)
@@ -284,14 +304,14 @@ func mergeValueMessages(mc *Memcache, prev, msg *message) (bool, error) {
 	return true, nil
 }
 
-func mergeStatsMessages(mc *Memcache, prev, msg *message) (bool, error) {
+func mergeStatsMessages(mc *memcache, prev, msg *message) (bool, error) {
 	debug("try to merge stats message: %v", msg.stats)
 
-	statsMessages := prev.command.typ == MemcacheStatsMsg &&
-		(msg.command.typ == MemcacheStatsMsg ||
-			msg.command.code == MemcacheResEnd)
+	statsMessages := prev.command.typ == memcacheStatsMsg &&
+		(msg.command.typ == memcacheStatsMsg ||
+			msg.command.code == memcacheResEnd)
 	if !statsMessages {
-		err := ErrExpectedStatsForMerge
+		err := errExpectedStatsForMerge
 		debug("%v", err)
 		return false, nil
 	}
@@ -309,15 +329,14 @@ func checkResponseComplete(msg *message) bool {
 			return true
 		}
 		return len(msg.keys) == 0
-	} else {
-		cont := msg.command.code == MemcacheResValue ||
-			msg.command.code == MemcacheResStat
-		return !cont
 	}
+
+	cont := msg.command.code == memcacheResValue ||
+		msg.command.code == memcacheResStat
+	return !cont
 }
 
 func newTransaction(requ, resp *message) *transaction {
-
 	if requ == nil && resp == nil {
 		return nil
 	}
@@ -332,18 +351,17 @@ func newTransaction(requ, resp *message) *transaction {
 		t.Init(requ)
 		t.BytesOut = requ.Size
 		t.BytesIn = resp.Size
-		t.ResponseTime = int32(resp.Ts.Sub(requ.Ts).Nanoseconds() / 1e6) // [ms]
+		t.EndTime = resp.Ts
 		t.Notes = append(t.Notes, requ.Notes...)
 		t.Notes = append(t.Notes, resp.Notes...)
 	case requ != nil && resp == nil:
 		t.Init(requ)
 		t.BytesOut = requ.Size
-		t.ResponseTime = -1
 		t.Notes = append(t.Notes, requ.Notes...)
 	case requ == nil && resp != nil:
 		t.Init(resp)
 		t.BytesIn = resp.Size
-		t.ResponseTime = -1
+		t.EndTime = resp.Ts
 		t.Notes = append(t.Notes, resp.Notes...)
 	}
 
@@ -360,7 +378,7 @@ func (t *transaction) Init(msg *message) {
 	}
 }
 
-func (t *transaction) Event(event common.MapStr) error {
+func (t *transaction) Event(event *beat.Event) error {
 	debug("count event notes: %v", len(t.Notes))
 	if err := t.Transaction.Event(event); err != nil {
 		logp.Warn("error filling generic transaction fields: %v", err)
@@ -368,7 +386,7 @@ func (t *transaction) Event(event common.MapStr) error {
 	}
 
 	mc := common.MapStr{}
-	event["memcache"] = mc
+	event.Fields["memcache"] = mc
 
 	if t.request != nil {
 		_, err := t.request.SubEvent("request", mc)
@@ -380,7 +398,7 @@ func (t *transaction) Event(event common.MapStr) error {
 	if t.response != nil {
 		_, err := t.response.SubEvent("response", mc)
 		if err != nil {
-			logp.Warn("error filling transaction reponse: %v", err)
+			logp.Warn("error filling transaction response: %v", err)
 			return err
 		}
 	}
@@ -409,7 +427,7 @@ func computeTransactionStatus(requ, resp *message) string {
 	case requ != nil && resp == nil:
 		if requ.isQuiet || requ.noreply {
 			return common.OK_STATUS
-		} else if requ.command.code == MemcacheCmdQuit {
+		} else if requ.command.code == memcacheCmdQuit {
 			return common.OK_STATUS
 		} else {
 			return common.SERVER_ERROR_STATUS
@@ -423,19 +441,19 @@ func computeTransactionStatus(requ, resp *message) string {
 			return common.ERROR_STATUS
 		}
 	case requ != nil && resp != nil && !requ.isBinary:
-		if resp.command.typ != MemcacheFailResp {
+		if resp.command.typ != memcacheFailResp {
 			return common.OK_STATUS
 		}
 
 		switch resp.command.code {
-		case MemcacheErrClientError, MemcacheErrSame:
+		case memcacheErrClientError, memcacheErrSame:
 			return common.CLIENT_ERROR_STATUS
-		case MemcacheErrServerError,
-			MemcacheErrBusy,
-			MemcacheErrBadClass,
-			MemcacheErrNoSpare,
-			MemcacheErrNotFull,
-			MemcacheErrUnsafe:
+		case memcacheErrServerError,
+			memcacheErrBusy,
+			memcacheErrBadClass,
+			memcacheErrNoSpare,
+			memcacheErrNotFull,
+			memcacheErrUnsafe:
 			return common.SERVER_ERROR_STATUS
 		default:
 			return common.ERROR_STATUS

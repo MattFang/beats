@@ -1,8 +1,26 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package common
 
 import (
 	"fmt"
 	"net"
+	"time"
 )
 
 // In order for the IpPortTuple and the TcpTuple to be used as
@@ -11,125 +29,158 @@ import (
 // We're introducing the HashableIpPortTuple and the HashableTcpTuple
 // types which are internally simple byte arrays.
 
-const MaxIpPortTupleRawSize = 16 + 16 + 2 + 2
+const MaxIPPortTupleRawSize = 16 + 16 + 2 + 2
 
-type HashableIpPortTuple [MaxIpPortTupleRawSize]byte
+type HashableIPPortTuple [MaxIPPortTupleRawSize]byte
 
-type IpPortTuple struct {
-	Ip_length          int
-	Src_ip, Dst_ip     net.IP
-	Src_port, Dst_port uint16
-
-	raw    HashableIpPortTuple // Src_ip:Src_port:Dst_ip:Dst_port
-	revRaw HashableIpPortTuple // Dst_ip:Dst_port:Src_ip:Src_port
+type BaseTuple struct {
+	SrcIP, DstIP     net.IP
+	SrcPort, DstPort uint16
 }
 
-func NewIpPortTuple(ip_length int, src_ip net.IP, src_port uint16,
-	dst_ip net.IP, dst_port uint16) IpPortTuple {
+type IPPortTuple struct {
+	BaseTuple
 
-	tuple := IpPortTuple{
-		Ip_length: ip_length,
-		Src_ip:    src_ip,
-		Dst_ip:    dst_ip,
-		Src_port:  src_port,
-		Dst_port:  dst_port,
+	IPLength int
+
+	raw    HashableIPPortTuple // Src_ip:Src_port:Dst_ip:Dst_port
+	revRaw HashableIPPortTuple // Dst_ip:Dst_port:Src_ip:Src_port
+}
+
+func NewIPPortTuple(ipLength int, srcIP net.IP, srcPort uint16,
+	dstIP net.IP, dstPort uint16) IPPortTuple {
+
+	tuple := IPPortTuple{
+		IPLength: ipLength,
+		BaseTuple: BaseTuple{
+			SrcIP:   srcIP,
+			DstIP:   dstIP,
+			SrcPort: srcPort,
+			DstPort: dstPort,
+		},
 	}
-	tuple.ComputeHashebles()
+	tuple.ComputeHashables()
 
 	return tuple
 }
 
-func (t *IpPortTuple) ComputeHashebles() {
-	copy(t.raw[0:16], t.Src_ip)
-	copy(t.raw[16:18], []byte{byte(t.Src_port >> 8), byte(t.Src_port)})
-	copy(t.raw[18:34], t.Dst_ip)
-	copy(t.raw[34:36], []byte{byte(t.Dst_port >> 8), byte(t.Dst_port)})
+func (t *IPPortTuple) ComputeHashables() {
+	copy(t.raw[0:16], t.SrcIP)
+	copy(t.raw[16:18], []byte{byte(t.SrcPort >> 8), byte(t.SrcPort)})
+	copy(t.raw[18:34], t.DstIP)
+	copy(t.raw[34:36], []byte{byte(t.DstPort >> 8), byte(t.DstPort)})
 
-	copy(t.revRaw[0:16], t.Dst_ip)
-	copy(t.revRaw[16:18], []byte{byte(t.Dst_port >> 8), byte(t.Dst_port)})
-	copy(t.revRaw[18:34], t.Src_ip)
-	copy(t.revRaw[34:36], []byte{byte(t.Src_port >> 8), byte(t.Src_port)})
+	copy(t.revRaw[0:16], t.DstIP)
+	copy(t.revRaw[16:18], []byte{byte(t.DstPort >> 8), byte(t.DstPort)})
+	copy(t.revRaw[18:34], t.SrcIP)
+	copy(t.revRaw[34:36], []byte{byte(t.SrcPort >> 8), byte(t.SrcPort)})
 }
 
-func (t *IpPortTuple) String() string {
+func (t *IPPortTuple) String() string {
 	return fmt.Sprintf("IpPortTuple src[%s:%d] dst[%s:%d]",
-		t.Src_ip.String(),
-		t.Src_port,
-		t.Dst_ip.String(),
-		t.Dst_port)
+		t.SrcIP.String(),
+		t.SrcPort,
+		t.DstIP.String(),
+		t.DstPort)
 }
 
 // Hashable returns a hashable value that uniquely identifies
 // the IP-port tuple.
-func (t *IpPortTuple) Hashable() HashableIpPortTuple {
+func (t *IPPortTuple) Hashable() HashableIPPortTuple {
 	return t.raw
 }
 
 // Hashable returns a hashable value that uniquely identifies
 // the IP-port tuple after swapping the source and destination.
-func (t *IpPortTuple) RevHashable() HashableIpPortTuple {
+func (t *IPPortTuple) RevHashable() HashableIPPortTuple {
 	return t.revRaw
 }
 
-const MaxTcpTupleRawSize = 16 + 16 + 2 + 2 + 4
+const MaxTCPTupleRawSize = 16 + 16 + 2 + 2 + 4
 
-type HashableTcpTuple [MaxTcpTupleRawSize]byte
+type HashableTCPTuple [MaxTCPTupleRawSize]byte
 
-type TcpTuple struct {
-	Ip_length          int
-	Src_ip, Dst_ip     net.IP
-	Src_port, Dst_port uint16
-	Stream_id          uint32
+type TCPTuple struct {
+	BaseTuple
+	IPLength int
 
-	raw HashableTcpTuple // Src_ip:Src_port:Dst_ip:Dst_port:stream_id
+	StreamID uint32
+
+	raw HashableTCPTuple // Src_ip:Src_port:Dst_ip:Dst_port:stream_id
 }
 
-func TcpTupleFromIpPort(t *IpPortTuple, tcp_id uint32) TcpTuple {
-	tuple := TcpTuple{
-		Ip_length: t.Ip_length,
-		Src_ip:    t.Src_ip,
-		Dst_ip:    t.Dst_ip,
-		Src_port:  t.Src_port,
-		Dst_port:  t.Dst_port,
-		Stream_id: tcp_id,
+func TCPTupleFromIPPort(t *IPPortTuple, streamID uint32) TCPTuple {
+	tuple := TCPTuple{
+		IPLength: t.IPLength,
+		BaseTuple: BaseTuple{
+			SrcIP:   t.SrcIP,
+			DstIP:   t.DstIP,
+			SrcPort: t.SrcPort,
+			DstPort: t.DstPort,
+		},
+		StreamID: streamID,
 	}
-	tuple.ComputeHashebles()
+	tuple.ComputeHashables()
 
 	return tuple
 }
 
-func (t *TcpTuple) ComputeHashebles() {
-	copy(t.raw[0:16], t.Src_ip)
-	copy(t.raw[16:18], []byte{byte(t.Src_port >> 8), byte(t.Src_port)})
-	copy(t.raw[18:34], t.Dst_ip)
-	copy(t.raw[34:36], []byte{byte(t.Dst_port >> 8), byte(t.Dst_port)})
-	copy(t.raw[36:40], []byte{byte(t.Stream_id >> 24), byte(t.Stream_id >> 16),
-		byte(t.Stream_id >> 8), byte(t.Stream_id)})
+func (t *TCPTuple) ComputeHashables() {
+	copy(t.raw[0:16], t.SrcIP)
+	copy(t.raw[16:18], []byte{byte(t.SrcPort >> 8), byte(t.SrcPort)})
+	copy(t.raw[18:34], t.DstIP)
+	copy(t.raw[34:36], []byte{byte(t.DstPort >> 8), byte(t.DstPort)})
+	copy(t.raw[36:40], []byte{byte(t.StreamID >> 24), byte(t.StreamID >> 16),
+		byte(t.StreamID >> 8), byte(t.StreamID)})
 }
 
-func (t TcpTuple) String() string {
+func (t TCPTuple) String() string {
 	return fmt.Sprintf("TcpTuple src[%s:%d] dst[%s:%d] stream_id[%d]",
-		t.Src_ip.String(),
-		t.Src_port,
-		t.Dst_ip.String(),
-		t.Dst_port,
-		t.Stream_id)
+		t.SrcIP.String(),
+		t.SrcPort,
+		t.DstIP.String(),
+		t.DstPort,
+		t.StreamID)
 }
 
 // Returns a pointer to the equivalent IpPortTuple.
-func (t TcpTuple) IpPort() *IpPortTuple {
-	ipport := NewIpPortTuple(t.Ip_length, t.Src_ip, t.Src_port,
-		t.Dst_ip, t.Dst_port)
+func (t TCPTuple) IPPort() *IPPortTuple {
+	ipport := NewIPPortTuple(t.IPLength, t.SrcIP, t.SrcPort,
+		t.DstIP, t.DstPort)
 	return &ipport
 }
 
 // Hashable() returns a hashable value that uniquely identifies
 // the TCP tuple.
-func (t *TcpTuple) Hashable() HashableTcpTuple {
+func (t *TCPTuple) Hashable() HashableTCPTuple {
 	return t.raw
 }
 
-// Source and destination process names, as found by the proc module.
-type CmdlineTuple struct {
-	Src, Dst []byte
+// ProcessTuple contains the source and destination process names, as found by
+// the proc module.
+type ProcessTuple struct {
+	Src, Dst Process
+}
+
+// Process contains process information.
+type Process struct {
+	PID       int       // Process ID.
+	PPID      int       // Parent process ID.
+	Name      string    // Name of process (or alias given by cmdline_grep config).
+	Args      []string  // Process arguments.
+	Exe       string    // Absolute path to exe.
+	CWD       string    // Current working directory.
+	StartTime time.Time // Start time of process.
+}
+
+// Reverse returns a copy of the receiver with the source and destination fields
+// swapped.
+func (c *ProcessTuple) Reverse() ProcessTuple {
+	if c == nil {
+		return ProcessTuple{}
+	}
+	return ProcessTuple{
+		Src: c.Dst,
+		Dst: c.Src,
+	}
 }

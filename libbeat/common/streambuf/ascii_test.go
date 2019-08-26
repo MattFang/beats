@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package streambuf
@@ -145,7 +162,7 @@ func Test_UntilSymbolOrEnd(t *testing.T) {
 
 func Test_AsciiUintOK(t *testing.T) {
 	b := New([]byte("123 "))
-	v, err := b.AsciiUint(false)
+	v, err := b.UintASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(123), v)
@@ -154,29 +171,29 @@ func Test_AsciiUintOK(t *testing.T) {
 func Test_AsciiUintFailed(t *testing.T) {
 	b := New([]byte("123 "))
 	b.SetError(ErrTest)
-	_, err := b.AsciiUint(false)
+	_, err := b.UintASCII(false)
 	assert.Equal(t, ErrTest, err)
 }
 
 func Test_AsciiUintNotDigit(t *testing.T) {
 	b := New([]byte("test"))
-	_, err := b.AsciiUint(false)
+	_, err := b.UintASCII(false)
 	assert.Equal(t, ErrExpectedDigit, err)
 }
 
 func Test_AsciiUintEmpty(t *testing.T) {
 	b := New([]byte(""))
-	_, err := b.AsciiUint(false)
+	_, err := b.UintASCII(false)
 	assert.Equal(t, ErrNoMoreBytes, err)
 }
 
 func Test_AsciiUintCont(t *testing.T) {
 	b := New([]byte("12"))
-	_, err := b.AsciiUint(true)
+	_, err := b.UintASCII(true)
 	assert.Equal(t, ErrNoMoreBytes, err)
 
 	b.Append([]byte("34 "))
-	v, err := b.AsciiUint(true)
+	v, err := b.UintASCII(true)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(1234), v)
@@ -184,7 +201,7 @@ func Test_AsciiUintCont(t *testing.T) {
 
 func Test_AsciiUintOrEndOK(t *testing.T) {
 	b := New([]byte("12"))
-	v, err := b.AsciiUint(false)
+	v, err := b.UintASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(12), v)
@@ -192,7 +209,7 @@ func Test_AsciiUintOrEndOK(t *testing.T) {
 
 func Test_AsciiIntOK(t *testing.T) {
 	b := New([]byte("123 "))
-	v, err := b.AsciiInt(false)
+	v, err := b.IntASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(123), v)
@@ -200,7 +217,7 @@ func Test_AsciiIntOK(t *testing.T) {
 
 func Test_AsciiIntPosOK(t *testing.T) {
 	b := New([]byte("+123 "))
-	v, err := b.AsciiInt(false)
+	v, err := b.IntASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(123), v)
@@ -208,7 +225,7 @@ func Test_AsciiIntPosOK(t *testing.T) {
 
 func Test_AsciiIntNegOK(t *testing.T) {
 	b := New([]byte("-123 "))
-	v, err := b.AsciiInt(false)
+	v, err := b.IntASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(-123), v)
@@ -217,29 +234,29 @@ func Test_AsciiIntNegOK(t *testing.T) {
 func Test_AsciiIntFailed(t *testing.T) {
 	b := New([]byte("123 "))
 	b.SetError(ErrTest)
-	_, err := b.AsciiInt(false)
+	_, err := b.IntASCII(false)
 	assert.Equal(t, ErrTest, err)
 }
 
 func Test_AsciiIntNotDigit(t *testing.T) {
 	b := New([]byte("test"))
-	_, err := b.AsciiInt(false)
+	_, err := b.IntASCII(false)
 	assert.Equal(t, ErrExpectedDigit, err)
 }
 
 func Test_AsciiIntEmpty(t *testing.T) {
 	b := New([]byte(""))
-	_, err := b.AsciiInt(false)
+	_, err := b.IntASCII(false)
 	assert.Equal(t, ErrNoMoreBytes, err)
 }
 
 func Test_AsciiIntCont(t *testing.T) {
 	b := New([]byte("12"))
-	_, err := b.AsciiInt(true)
+	_, err := b.IntASCII(true)
 	assert.Equal(t, ErrNoMoreBytes, err)
 
 	b.Append([]byte("34 "))
-	v, err := b.AsciiInt(true)
+	v, err := b.IntASCII(true)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(1234), v)
@@ -247,7 +264,7 @@ func Test_AsciiIntCont(t *testing.T) {
 
 func Test_AsciiIntOrEndOK(t *testing.T) {
 	b := New([]byte("12"))
-	v, err := b.AsciiInt(false)
+	v, err := b.IntASCII(false)
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(12), v)
@@ -255,7 +272,7 @@ func Test_AsciiIntOrEndOK(t *testing.T) {
 
 func Test_AsciiMatchOK(t *testing.T) {
 	b := New([]byte("match test"))
-	r, err := b.AsciiMatch([]byte("match"))
+	r, err := b.MatchASCII([]byte("match"))
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.True(t, r)
@@ -264,7 +281,7 @@ func Test_AsciiMatchOK(t *testing.T) {
 
 func Test_AsciiMatchNo(t *testing.T) {
 	b := New([]byte("match test"))
-	r, err := b.AsciiMatch([]byte("batch"))
+	r, err := b.MatchASCII([]byte("batch"))
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.False(t, r)
@@ -274,11 +291,11 @@ func Test_AsciiMatchNo(t *testing.T) {
 func Test_AsciiMatchCont(t *testing.T) {
 	b := New([]byte("mat"))
 
-	_, err := b.AsciiMatch([]byte("match"))
+	_, err := b.MatchASCII([]byte("match"))
 	assert.Equal(t, ErrNoMoreBytes, err)
 
 	b.Append([]byte("ch test"))
-	r, err := b.AsciiMatch([]byte("match"))
+	r, err := b.MatchASCII([]byte("match"))
 	b.checkInvariants(t)
 	assert.Nil(t, err)
 	assert.True(t, r)
@@ -288,6 +305,6 @@ func Test_AsciiMatchCont(t *testing.T) {
 func Test_AsciiMatchFailed(t *testing.T) {
 	b := New([]byte("match test"))
 	b.SetError(ErrTest)
-	_, err := b.AsciiMatch([]byte("match"))
+	_, err := b.MatchASCII([]byte("match"))
 	assert.Equal(t, ErrTest, err)
 }

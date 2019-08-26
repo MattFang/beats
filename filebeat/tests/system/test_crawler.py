@@ -5,6 +5,7 @@ from filebeat import BaseTest
 import codecs
 import os
 import time
+import unittest
 from nose.plugins.skip import Skip, SkipTest
 import shutil
 
@@ -199,7 +200,7 @@ class Test(BaseTest):
 
         # expecting 6 more events
         self.wait_until(
-            lambda: self.output_has(lines=iterations1+iterations2), max_timeout=10)
+            lambda: self.output_has(lines=iterations1 + iterations2), max_timeout=10)
 
         filebeat.check_kill_and_wait()
 
@@ -214,7 +215,8 @@ class Test(BaseTest):
         """
 
         self.render_config_template(
-            path=os.path.abspath(self.working_dir) + "/log/*"
+            path=os.path.abspath(self.working_dir) + "/log/*",
+            clean_removed="false",
         )
         os.mkdir(self.working_dir + "/log/")
 
@@ -273,7 +275,8 @@ class Test(BaseTest):
         self.render_config_template(
             path=os.path.abspath(self.working_dir) + "/log/*.log",
             close_removed="true",
-            scan_frequency="0.1s"
+            scan_frequency="0.1s",
+            clean_removed="false",
         )
         os.mkdir(self.working_dir + "/log/")
 
@@ -358,7 +361,7 @@ class Test(BaseTest):
             f.write("hello world 2\n")
 
         self.wait_until(
-            lambda: self.output_has(lines=1+2), max_timeout=10)
+            lambda: self.output_has(lines=1 + 2), max_timeout=10)
 
         filebeat.check_kill_and_wait()
 
@@ -388,7 +391,7 @@ class Test(BaseTest):
 
             self.wait_until(
                 lambda: self.output_has(1),
-                max_timeout=15)
+                max_timeout=60, poll_interval=1)
 
         lines_written = 0
 
@@ -403,7 +406,7 @@ class Test(BaseTest):
 
                 self.wait_until(
                     lambda: self.output_has(lines_written + 1),
-                    max_timeout=15)
+                    max_timeout=60, poll_interval=1)
 
         filebeat.check_kill_and_wait()
 
@@ -463,10 +466,13 @@ class Test(BaseTest):
 
         testfile = self.working_dir + "/log/test.log"
         with open(testfile, 'w') as f:
-            # Write lines before registar started
+            # Write lines before registrar started
             f.write("hello world 1\n")
             f.write("hello world 2\n")
             f.flush()
+
+        # Sleep 1 second to make sure the file is persisted on disk and timestamp is in the past
+        time.sleep(1)
 
         filebeat = self.start_beat()
         self.wait_until(
@@ -512,7 +518,7 @@ class Test(BaseTest):
 
         # Add utf-8 Chars for the first time
         with codecs.open(testfile, "w", "utf-8") as f:
-            # Write lines before registar started
+            # Write lines before registrar started
 
             # Special encoding needed?!?
             f.write("ニコラスRuflin".decode("utf-8") + "\n")
@@ -529,7 +535,7 @@ class Test(BaseTest):
             f.flush()
 
             self.wait_until(
-                lambda: self.output_has(lines=1+2), max_timeout=10)
+                lambda: self.output_has(lines=1 + 2), max_timeout=10)
 
         filebeat.check_kill_and_wait()
 
@@ -568,15 +574,15 @@ class Test(BaseTest):
                 f.write(text + "\n")
 
         # create the config file
-        prospectors = []
+        inputs = []
         for enc_go, enc_py, _ in encodings:
-            prospectors.append({
+            inputs.append({
                 "path": self.working_dir + "/log/test-{}".format(enc_py),
                 "encoding": enc_go
             })
         self.render_config_template(
-            template="filebeat_prospectors.yml.j2",
-            prospectors=prospectors
+            template_name="filebeat_inputs",
+            inputs=inputs
         )
 
         # run filebeat
@@ -759,6 +765,9 @@ class Test(BaseTest):
         """
         Checks that filebeat handles files without reading permission well
         """
+        if os.name != "nt" and os.geteuid() == 0:
+            # root ignores permission flags, so we have to skip the test
+            raise SkipTest
 
         self.render_config_template(
             path=os.path.abspath(self.working_dir) + "/log/*",

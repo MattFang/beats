@@ -1,147 +1,188 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package publish
 
 import (
+	"net"
 	"testing"
 	"time"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/packetbeat/pb"
+	"github.com/elastic/ecs/code/go/ecs"
 )
 
-func testEvent() common.MapStr {
-	event := common.MapStr{}
-	event["@timestamp"] = common.Time(time.Now())
-	event["type"] = "test"
-	event["src"] = &common.Endpoint{}
-	event["dst"] = &common.Endpoint{}
-	return event
+func testEvent() beat.Event {
+	return beat.Event{
+		Timestamp: time.Now(),
+		Fields: common.MapStr{
+			"type": "test",
+			"src":  &common.Endpoint{},
+			"dst":  &common.Endpoint{},
+		},
+	}
 }
 
 // Test that FilterEvent detects events that do not contain the required fields
 // and returns error.
 func TestFilterEvent(t *testing.T) {
 	var testCases = []struct {
-		f   func() common.MapStr
+		f   func() beat.Event
 		err string
 	}{
-		{func() common.MapStr {
-			return testEvent()
-		}, ""},
-
-		{func() common.MapStr {
-			m := testEvent()
-			m["@timestamp"] = time.Now()
-			return m
-		}, "invalid '@timestamp'"},
-
-		{func() common.MapStr {
-			m := testEvent()
-			delete(m, "@timestamp")
-			return m
-		}, "missing '@timestamp'"},
-
-		{func() common.MapStr {
-			m := testEvent()
-			delete(m, "type")
-			return m
-		}, "missing 'type'"},
-
-		{func() common.MapStr {
-			m := testEvent()
-			m["type"] = 123
-			return m
-		}, "invalid 'type'"},
+		{testEvent, ""},
+		{
+			func() beat.Event {
+				e := testEvent()
+				e.Fields["@timestamp"] = time.Now()
+				return e
+			},
+			"duplicate '@timestamp'",
+		},
+		{
+			func() beat.Event {
+				e := testEvent()
+				e.Timestamp = time.Time{}
+				return e
+			},
+			"missing '@timestamp'",
+		},
+		{
+			func() beat.Event {
+				e := testEvent()
+				delete(e.Fields, "type")
+				return e
+			},
+			"missing 'type'",
+		},
+		{
+			func() beat.Event {
+				e := testEvent()
+				e.Fields["type"] = 123
+				return e
+			},
+			"invalid 'type'",
+		},
 	}
 
 	for _, test := range testCases {
-		assert.Regexp(t, test.err, validateEvent(test.f()))
+		event := test.f()
+		assert.Regexp(t, test.err, validateEvent(&event))
 	}
 }
 
-func TestDirectionOut(t *testing.T) {
-	publisher := newTestPublisher([]string{"192.145.2.4"})
-	ppub, _ := NewPublisher(publisher, 1000, 1, false)
+func TestPublish(t *testing.T) {
+	var srcIP, dstIP = "192.145.2.4", "192.145.2.5"
 
-	event := common.MapStr{
-		"src": &common.Endpoint{
-			Ip:      "192.145.2.4",
-			Port:    3267,
-			Name:    "server1",
-			Cmdline: "proc1 start",
-			Proc:    "proc1",
-		},
-		"dst": &common.Endpoint{
-			Ip:      "192.145.2.5",
-			Port:    32232,
-			Name:    "server2",
-			Cmdline: "proc2 start",
-			Proc:    "proc2",
-		},
+	event := func() *beat.Event {
+		return &beat.Event{
+			Timestamp: time.Now(),
+			Fields: common.MapStr{
+				"type": "test",
+				"_packetbeat": &pb.Fields{
+					Source: &ecs.Source{
+						IP:   srcIP,
+						Port: 3267,
+					},
+					Destination: &ecs.Destination{
+						IP:   dstIP,
+						Port: 32232,
+					},
+				},
+			},
+		}
 	}
 
-	assert.True(t, ppub.normalizeTransAddr(event))
-	assert.True(t, event["client_ip"] == "192.145.2.4")
-	assert.True(t, event["direction"] == "out")
-}
+	t.Run("direction/inbound", func(t *testing.T) {
+		processor := transProcessor{
+			localIPs: []net.IP{net.ParseIP(dstIP)},
+			name:     "test",
+		}
 
-func TestDirectionIn(t *testing.T) {
-	publisher := newTestPublisher([]string{"192.145.2.5"})
-	ppub, _ := NewPublisher(publisher, 1000, 1, false)
+		res, _ := processor.Run(event())
+		if res == nil {
+			t.Fatalf("event has been filtered out")
+		}
 
-	event := common.MapStr{
-		"src": &common.Endpoint{
-			Ip:      "192.145.2.4",
-			Port:    3267,
-			Name:    "server1",
-			Cmdline: "proc1 start",
-			Proc:    "proc1",
-		},
-		"dst": &common.Endpoint{
-			Ip:      "192.145.2.5",
-			Port:    32232,
-			Name:    "server2",
-			Cmdline: "proc2 start",
-			Proc:    "proc2",
-		},
-	}
+		dir, _ := res.GetValue("network.direction")
+		assert.Equal(t, "inbound", dir)
+	})
 
-	assert.True(t, ppub.normalizeTransAddr(event))
-	assert.True(t, event["client_ip"] == "192.145.2.4")
-	assert.True(t, event["direction"] == "in")
-}
+	t.Run("direction/outbound", func(t *testing.T) {
+		processor := transProcessor{
+			localIPs: []net.IP{net.ParseIP(srcIP)},
+			name:     "test",
+		}
 
-func newTestPublisher(ips []string) *publisher.BeatPublisher {
-	p := &publisher.BeatPublisher{}
-	p.IpAddrs = ips
-	return p
-}
+		res, _ := processor.Run(event())
+		if res == nil {
+			t.Fatalf("event has been filtered out")
+		}
 
-func TestNoDirection(t *testing.T) {
-	publisher := newTestPublisher([]string{"192.145.2.6"})
-	ppub, _ := NewPublisher(publisher, 1000, 1, false)
+		dir, _ := res.GetValue("network.direction")
+		assert.Equal(t, "outbound", dir)
+	})
 
-	event := common.MapStr{
-		"src": &common.Endpoint{
-			Ip:      "192.145.2.4",
-			Port:    3267,
-			Name:    "server1",
-			Cmdline: "proc1 start",
-			Proc:    "proc1",
-		},
-		"dst": &common.Endpoint{
-			Ip:      "192.145.2.5",
-			Port:    32232,
-			Name:    "server2",
-			Cmdline: "proc2 start",
-			Proc:    "proc2",
-		},
-	}
+	t.Run("direction/internal", func(t *testing.T) {
+		processor := transProcessor{
+			localIPs: []net.IP{net.ParseIP(srcIP), net.ParseIP(dstIP)},
+			name:     "test",
+		}
 
-	assert.True(t, ppub.normalizeTransAddr(event))
-	assert.True(t, event["client_ip"] == "192.145.2.4")
-	_, ok := event["direction"]
-	assert.False(t, ok)
+		res, _ := processor.Run(event())
+		if res == nil {
+			t.Fatalf("event has been filtered out")
+		}
+
+		dir, _ := res.GetValue("network.direction")
+		assert.Equal(t, "internal", dir)
+	})
+
+	t.Run("direction/none", func(t *testing.T) {
+		processor := transProcessor{
+			localIPs: []net.IP{net.ParseIP(dstIP + "1")},
+			name:     "test",
+		}
+
+		res, _ := processor.Run(event())
+		if res == nil {
+			t.Fatalf("event has been filtered out")
+		}
+
+		dir, _ := res.GetValue("network.direction")
+		assert.Nil(t, dir)
+	})
+
+	t.Run("ignore_outgoing", func(t *testing.T) {
+		processor := transProcessor{
+			localIPs:       []net.IP{net.ParseIP(srcIP)},
+			ignoreOutgoing: true,
+			name:           "test",
+		}
+
+		res, err := processor.Run(event())
+		if assert.NoError(t, err) {
+			assert.Nil(t, res)
+		}
+	})
 }

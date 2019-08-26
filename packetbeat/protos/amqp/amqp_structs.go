@@ -1,15 +1,33 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package amqp
 
 import (
-	"github.com/elastic/beats/libbeat/common"
 	"time"
+
+	"github.com/elastic/beats/libbeat/common"
 )
 
-type AmqpMethod func(*AmqpMessage, []byte) (bool, bool)
+type amqpMethod func(*amqpMessage, []byte) (bool, bool)
 
 const (
-	TransactionsHashSize = 2 ^ 16
-	TransactionTimeout   = 10 * 1e9
+	transactionsHashSize = 2 ^ 16
+	transactionTimeout   = 10 * 1e9
 )
 
 //layout used when a timestamp must be parsed
@@ -18,11 +36,14 @@ const (
 )
 
 //Frame types and codes
+
+type frameType byte
+
 const (
-	methodType    = 1
-	headerType    = 2
-	bodyType      = 3
-	heartbeatType = 8
+	methodType    frameType = 1
+	headerType    frameType = 2
+	bodyType      frameType = 3
+	heartbeatType frameType = 8
 )
 
 const (
@@ -120,7 +141,7 @@ const (
 const (
 	expirationProp      byte = 1
 	replyToProp         byte = 2
-	correlationIdProp   byte = 4
+	correlationIDProp   byte = 4
 	priorityProp        byte = 8
 	deliveryModeProp    byte = 16
 	headersProp         byte = 32
@@ -131,11 +152,11 @@ const (
 //Message properties codes for byte prop2 in getMessageProperties
 
 const (
-	appIdProp     byte = 8
-	userIdProp    byte = 16
+	appIDProp     byte = 8
+	userIDProp    byte = 16
 	typeProp      byte = 32
 	timestampProp byte = 64
-	messageIdProp byte = 128
+	messageIDProp byte = 128
 )
 
 //table types
@@ -162,66 +183,60 @@ const (
 )
 
 type amqpPrivateData struct {
-	Data [2]*AmqpStream
+	data [2]*amqpStream
 }
 
-type AmqpFrame struct {
-	Type    byte
-	channel uint16
+type amqpFrame struct {
+	Type frameType
+	// channel uint16  (frame channel is currently ignored)
 	size    uint32
 	content []byte
 }
 
-type AmqpMessage struct {
-	Ts             time.Time
-	TcpTuple       common.TcpTuple
-	CmdlineTuple   *common.CmdlineTuple
-	Method         string
-	IsRequest      bool
-	Request        string
-	Direction      uint8
-	ParseArguments bool
+type amqpMessage struct {
+	ts             time.Time
+	tcpTuple       common.TCPTuple
+	cmdlineTuple   *common.ProcessTuple
+	method         string
+	isRequest      bool
+	request        string
+	direction      uint8
+	parseArguments bool
 
 	//mapstr containing all the options for the methods and header fields
-	Fields common.MapStr
+	fields common.MapStr
 
-	Body      []byte
-	Body_size uint64
+	body     []byte
+	bodySize uint64
 
-	Notes []string
+	notes []string
 }
 
 // represent a stream of data to be parsed
-type AmqpStream struct {
-	tcptuple *common.TcpTuple
-
+type amqpStream struct {
 	data        []byte
 	parseOffset int
-
-	message *AmqpMessage
+	message     *amqpMessage
 }
 
 // contains the result of parsing
-type AmqpTransaction struct {
-	Type  string
-	tuple common.TcpTuple
-	Src   common.Endpoint
-	Dst   common.Endpoint
-	Ts    int64
-	JsTs  time.Time
+type amqpTransaction struct {
+	tuple common.TCPTuple
+	src   common.Endpoint
+	dst   common.Endpoint
 	ts    time.Time
 
-	Method       string
-	Request      string
-	Response     string
-	ResponseTime int32
-	Body         []byte
-	BytesOut     uint64
-	BytesIn      uint64
-	ToString     bool
-	Notes        []string
+	method   string
+	request  string
+	response string
+	endTime  time.Time
+	body     []byte
+	bytesOut uint64
+	bytesIn  uint64
+	toString bool
+	notes    []string
 
-	Amqp common.MapStr
+	amqp common.MapStr
 
 	timer *time.Timer
 }

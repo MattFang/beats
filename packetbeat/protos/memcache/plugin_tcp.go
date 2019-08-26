@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package memcache
 
 // Memcache TCP Protocol Plugin implementation
@@ -23,7 +40,7 @@ type tcpConfig struct {
 }
 
 type tcpConnectionData struct {
-	Streams    [2]*stream
+	streams    [2]*stream
 	connection *connection
 }
 
@@ -72,14 +89,14 @@ func isMemcacheConnection(private protos.ProtocolData) bool {
 	return ok
 }
 
-func (mc *Memcache) ConnectionTimeout() time.Duration {
+func (mc *memcache) ConnectionTimeout() time.Duration {
 	return mc.tcpTransTimeout
 }
 
 // Parse is called from TCP layer when payload data is available for parsing.
-func (mc *Memcache) Parse(
+func (mc *memcache) Parse(
 	pkt *protos.Packet,
-	tcptuple *common.TcpTuple,
+	tcptuple *common.TCPTuple,
 	dir uint8,
 	private protos.ProtocolData,
 ) protos.ProtocolData {
@@ -89,30 +106,30 @@ func (mc *Memcache) Parse(
 	debug("memcache connection %p", tcpConn)
 	tcpConn = mc.memcacheParseTCP(tcpConn, pkt, tcptuple, dir)
 	if tcpConn == nil {
-		// explicitely return nil if tcpConn equals nil so ProtocolData really is nil
+		// explicitly return nil if tcpConn equals nil so ProtocolData really is nil
 		return nil
 	}
 	return tcpConn
 }
 
-func (mc *Memcache) newStream(tcptuple *common.TcpTuple) *stream {
+func (mc *memcache) newStream(tcptuple *common.TCPTuple) *stream {
 	s := &stream{}
 	s.parser.init(&mc.config)
-	s.Stream.Init(tcp.TCP_MAX_DATA_IN_STREAM)
+	s.Stream.Init(tcp.TCPMaxDataInStream)
 	return s
 }
 
-func (mc *Memcache) memcacheParseTCP(
+func (mc *memcache) memcacheParseTCP(
 	tcpConn *tcpConnectionData,
 	pkt *protos.Packet,
-	tcptuple *common.TcpTuple,
+	tcptuple *common.TCPTuple,
 	dir uint8,
 ) *tcpConnectionData {
 	// assume we are in sync
-	stream := tcpConn.Streams[dir]
+	stream := tcpConn.streams[dir]
 	if stream == nil {
 		stream = mc.newStream(tcptuple)
-		tcpConn.Streams[dir] = stream
+		tcpConn.streams[dir] = stream
 	}
 
 	debug("add payload to stream(%p): %v", stream, dir)
@@ -151,7 +168,7 @@ func (mc *Memcache) memcacheParseTCP(
 		}
 		stream.reset()
 
-		tuple := tcptuple.IpPort()
+		tuple := tcptuple.IPPort()
 		err = mc.onTCPMessage(conn, tuple, dir, msg)
 		if err != nil {
 			logp.Warn("error processing memcache message: %s", err)
@@ -166,30 +183,29 @@ func (mc *Memcache) memcacheParseTCP(
 	return tcpConn
 }
 
-func (mc *Memcache) onTCPMessage(
+func (mc *memcache) onTCPMessage(
 	conn *connection,
-	tuple *common.IpPortTuple,
+	tuple *common.IPPortTuple,
 	dir uint8,
 	msg *message,
 ) error {
 	msg.Tuple = *tuple
-	msg.Transport = applayer.TransportTcp
-	msg.CmdlineTuple = procs.ProcWatcher.FindProcessesTuple(tuple)
+	msg.Transport = applayer.TransportTCP
+	msg.CmdlineTuple = procs.ProcWatcher.FindProcessesTupleTCP(tuple)
 
 	if msg.IsRequest {
 		return mc.onTCPRequest(conn, tuple, dir, msg)
-	} else {
-		return mc.onTCPResponse(conn, tuple, dir, msg)
 	}
+	return mc.onTCPResponse(conn, tuple, dir, msg)
 }
 
-func (mc *Memcache) onTCPRequest(
+func (mc *memcache) onTCPRequest(
 	conn *connection,
-	tuple *common.IpPortTuple,
+	tuple *common.IPPortTuple,
 	dir uint8,
 	msg *message,
 ) error {
-	requestSeenFirst := dir == tcp.TcpDirectionOriginal
+	requestSeenFirst := dir == tcp.TCPDirectionOriginal
 	if requestSeenFirst {
 		msg.Direction = applayer.NetOriginalDirection
 	} else {
@@ -201,7 +217,7 @@ func (mc *Memcache) onTCPRequest(
 
 	msg.isComplete = true
 	waitResponse := msg.noreply ||
-		(!msg.isBinary && msg.command.code != MemcacheCmdQuit) ||
+		(!msg.isBinary && msg.command.code != memcacheCmdQuit) ||
 		(msg.isBinary && msg.opcode != opcodeQuitQ)
 	if waitResponse {
 		conn.requests.append(msg)
@@ -211,13 +227,13 @@ func (mc *Memcache) onTCPRequest(
 	return nil
 }
 
-func (mc *Memcache) onTCPResponse(
+func (mc *memcache) onTCPResponse(
 	conn *connection,
-	tuple *common.IpPortTuple,
+	tuple *common.IPPortTuple,
 	dir uint8,
 	msg *message,
 ) error {
-	requestSeenFirst := dir == tcp.TcpDirectionReverse
+	requestSeenFirst := dir == tcp.TCPDirectionReverse
 	if requestSeenFirst {
 		msg.Direction = applayer.NetOriginalDirection
 	} else {
@@ -249,7 +265,7 @@ func (mc *Memcache) onTCPResponse(
 	return mc.correlateTCP(conn)
 }
 
-func (mc *Memcache) correlateTCP(conn *connection) error {
+func (mc *memcache) correlateTCP(conn *connection) error {
 	// merge requests with responses into transactions
 	for !conn.responses.empty() {
 		var requ *message
@@ -258,7 +274,7 @@ func (mc *Memcache) correlateTCP(conn *connection) error {
 		for !conn.requests.empty() {
 			requ = conn.requests.pop()
 			if requ.isBinary != resp.isBinary {
-				err := ErrMixOfBinaryAndText
+				err := errMixOfBinaryAndText
 				logp.Warn("%v", err)
 				return err
 			}
@@ -277,7 +293,7 @@ func (mc *Memcache) correlateTCP(conn *connection) error {
 			// to clear message list from all quiet messages not having
 			// received a response
 			if requ.isBinary && !requ.isQuiet {
-				note := NoteNonQuietResponseOnly
+				note := noteNonQuietResponseOnly
 				logp.Warn("%s", note)
 				requ.AddNotes(note)
 				unmatchedRequests.Add(1)
@@ -297,7 +313,7 @@ func (mc *Memcache) correlateTCP(conn *connection) error {
 		// without having seen a request.
 		if requ == nil {
 			debug("found orphan memcached response=%p", resp)
-			resp.AddNotes(NoteTransactionNoRequ)
+			resp.AddNotes(noteTransactionNoRequ)
 			unmatchedResponses.Add(1)
 		}
 
@@ -312,7 +328,7 @@ func (mc *Memcache) correlateTCP(conn *connection) error {
 	return nil
 }
 
-func (mc *Memcache) onTCPTrans(requ, resp *message) error {
+func (mc *memcache) onTCPTrans(requ, resp *message) error {
 	debug("received memcache(tcp) transaction")
 	trans := newTransaction(requ, resp)
 	return mc.finishTransaction(trans)
@@ -320,8 +336,8 @@ func (mc *Memcache) onTCPTrans(requ, resp *message) error {
 
 // GapInStream is called by TCP layer when a packets are missing from the tcp
 // stream.
-func (mc *Memcache) GapInStream(
-	tcptuple *common.TcpTuple,
+func (mc *memcache) GapInStream(
+	tcptuple *common.TCPTuple,
 	dir uint8, nbytes int,
 	private protos.ProtocolData,
 ) (priv protos.ProtocolData, drop bool) {
@@ -333,7 +349,7 @@ func (mc *Memcache) GapInStream(
 	}
 
 	conn := private.(*tcpConnectionData)
-	stream := conn.Streams[dir]
+	stream := conn.streams[dir]
 	if stream == nil {
 		debug("Inactive stream. Dropping connection state.")
 		return private, true
@@ -344,9 +360,9 @@ func (mc *Memcache) GapInStream(
 
 	if msg != nil {
 		if msg.IsRequest {
-			msg.AddNotes(NoteRequestPacketLoss)
+			msg.AddNotes(noteRequestPacketLoss)
 		} else {
-			msg.AddNotes(NoteResponsePacketLoss)
+			msg.AddNotes(noteResponsePacketLoss)
 		}
 	}
 
@@ -378,14 +394,14 @@ func (mc *Memcache) GapInStream(
 		}
 	}
 
-	// need to drop TCP stream. But try to publish all cached trancsactions first
+	// need to drop TCP stream. But try to publish all cached transactions first
 	mc.pushAllTCPTrans(conn.connection)
 	return private, true
 }
 
 // ReceivedFin is called by tcp layer when the FIN flag is seen in the TCP stream.
-func (mc *Memcache) ReceivedFin(
-	tcptuple *common.TcpTuple,
+func (mc *memcache) ReceivedFin(
+	tcptuple *common.TCPTuple,
 	dir uint8,
 	private protos.ProtocolData,
 ) protos.ProtocolData {
@@ -393,7 +409,7 @@ func (mc *Memcache) ReceivedFin(
 	return private
 }
 
-func (mc *Memcache) pushAllTCPTrans(conn *connection) {
+func (mc *memcache) pushAllTCPTrans(conn *connection) {
 	if conn == nil {
 		return
 	}
@@ -407,7 +423,7 @@ func (mc *Memcache) pushAllTCPTrans(conn *connection) {
 	for !conn.requests.empty() {
 		msg := conn.requests.pop()
 		if !msg.isQuiet && !msg.noreply {
-			msg.AddNotes(NoteTransUnfinished)
+			msg.AddNotes(noteTransUnfinished)
 			unfinishedTransactions.Add(1)
 		}
 		debug("push incomplete request=%p", msg)
@@ -420,8 +436,8 @@ func (mc *Memcache) pushAllTCPTrans(conn *connection) {
 }
 
 func (private *tcpConnectionData) drop(dir uint8) {
-	private.Streams[dir] = nil
-	private.Streams[1-dir] = nil
+	private.streams[dir] = nil
+	private.streams[1-dir] = nil
 }
 
 func (stream *stream) reset() {

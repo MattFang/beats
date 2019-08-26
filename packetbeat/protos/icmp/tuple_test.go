@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package icmp
@@ -11,20 +28,20 @@ import (
 
 func TestIcmpTupleReverse(t *testing.T) {
 	tuple := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 1),
-		DstIp:       net.IPv4(192, 168, 0, 2),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 1),
+		dstIP:       net.IPv4(192, 168, 0, 2),
+		id:          256,
+		seq:         1,
 	}
 
 	actualReverse := tuple.Reverse()
 	expectedReverse := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 2),
-		DstIp:       net.IPv4(192, 168, 0, 1),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 2),
+		dstIP:       net.IPv4(192, 168, 0, 1),
+		id:          256,
+		seq:         1,
 	}
 
 	assert.Equal(t, expectedReverse, actualReverse)
@@ -32,11 +49,11 @@ func TestIcmpTupleReverse(t *testing.T) {
 
 func BenchmarkIcmpTupleReverse(b *testing.B) {
 	tuple := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 1),
-		DstIp:       net.IPv4(192, 168, 0, 2),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 1),
+		dstIP:       net.IPv4(192, 168, 0, 2),
+		id:          256,
+		seq:         1,
 	}
 
 	b.ResetTimer()
@@ -48,11 +65,11 @@ func BenchmarkIcmpTupleReverse(b *testing.B) {
 
 func TestIcmpTupleHashable(t *testing.T) {
 	tuple := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 1),
-		DstIp:       net.IPv4(192, 168, 0, 2),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 1),
+		dstIP:       net.IPv4(192, 168, 0, 2),
+		id:          256,
+		seq:         1,
 	}
 
 	actualHashable := tuple.Hashable()
@@ -68,11 +85,11 @@ func TestIcmpTupleHashable(t *testing.T) {
 
 func BenchmarkIcmpTupleHashable(b *testing.B) {
 	tuple := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 1),
-		DstIp:       net.IPv4(192, 168, 0, 2),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 1),
+		dstIP:       net.IPv4(192, 168, 0, 2),
+		id:          256,
+		seq:         1,
 	}
 
 	b.ResetTimer()
@@ -84,11 +101,11 @@ func BenchmarkIcmpTupleHashable(b *testing.B) {
 
 func TestIcmpTupleToString(t *testing.T) {
 	tuple := icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       net.IPv4(192, 168, 0, 1),
-		DstIp:       net.IPv4(192, 168, 0, 2),
-		Id:          256,
-		Seq:         1,
+		icmpVersion: 4,
+		srcIP:       net.IPv4(192, 168, 0, 1),
+		dstIP:       net.IPv4(192, 168, 0, 2),
+		id:          256,
+		seq:         1,
 	}
 
 	actualString := tuple.String()

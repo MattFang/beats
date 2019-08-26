@@ -1,49 +1,34 @@
 [[filtering-and-enhancing-data]]
-== Filtering and Enhancing the Exported Data
+== Filter and enhance the exported data
 
-When your use case requires only a subset of the data exported by Filebeat or you need to add metadata, you can <<filebeat-filtering-overview,use Filebeat config options to filter the data>>, or you can  <<defining-processors,define processors>>.
+Your use case might require only a subset of the data exported by {beatname_uc},
+or you might need to enhance the exported data (for example, by adding
+metadata). {beatname_uc} provides a couple of options for filtering and
+enhancing exported data.
 
-[float]
-[[filebeat-filtering-overview]]
-=== Filebeat Config Options for Filtering
+You can configure each input to include or exclude specific lines or files. This
+allows you to specify different filtering criteria for each input. To do this,
+you use the `include_lines`, `exclude_lines`, and `exclude_files` options under
+the +{beatname_lc}.inputs+ section of the config file (see
+<<configuration-{beatname_lc}-options>>). The disadvantage of this approach is
+that you need to implement a configuration option for each filtering criteria
+that you need.
 
-You can specify configuration options in the `filebeat` section of the config file to define regular expressions that
-match the lines you want to include and/or exclude from the output. The supported options are <<include-lines,`include_lines`>>, <<exclude-lines,`exclude_lines`>>, and <<exclude-files,`exclude_files`>>.
+Another approach (the one described here) is to define processors to configure
+global processing across all data exported by {beatname_uc}.
 
-For example, you can use the `include_lines` option to export any lines that start with "ERR" or "WARN":
-
-[source,yaml]
--------------------------------------------------------------------------------------
-filebeat.prospectors:
-- input_type: log
-  paths:
-    - /var/log/myapp/*.log
-  include_lines: ["^ERR", "^WARN"]
--------------------------------------------------------------------------------------
-
-The disadvantage of this approach is that you need to implement a configuration option for each filtering criteria that you need.
-
-See <<configuration-filebeat-options,Filebeat configuration options>> for more information about each option.
 
 [float]
-[[defining-processors]]
-=== Defining Processors
+[[using-processors]]
+=== Processors
 
-include::../../libbeat/docs/processors.asciidoc[]
+include::{libbeat-dir}/docs/processors.asciidoc[]
 
-For example, the following configuration drops all the DEBUG messages.
+[float]
+[[drop-event-example]]
+==== Drop event example
 
-deprecated[5.0.0-alpha4,The `filters` section is being renamed to `processors` in 5.0.0-alpha5. Therefore the following configuration is deprecated]
-
-[source,yaml]
------------------------------------------------------
-filters:
- - drop_event:
-    regexp:
-      message: "^DBG:"
------------------------------------------------------
-
-added[5.0.0-alpha5,Begin using the following configuration starting with 5.0.0-alpha5]
+The following configuration drops all the DEBUG messages.
 
 [source,yaml]
 -----------------------------------------------------
@@ -56,18 +41,6 @@ processors:
 
 To drop all the log messages coming from a certain log file:
 
-deprecated[5.0.0-alpha4,The `filters` section is being renamed to `processors` in 5.0.0-alpha5. Therefore the following configuration is deprecated]
-
-[source,yaml]
-----------------
-filters:
- - drop_event:
-     contains:
-        source: "test"
-----------------
-
-added[5.0.0-alpha5,Begin using the following configuration starting with 5.0.0-alpha5]
-
 [source,yaml]
 ----------------
 processors:
@@ -77,4 +50,57 @@ processors:
            source: "test"
 ----------------
 
-See <<configuration-processors>> for more information.
+[float]
+[[decode-json-example]]
+==== Decode JSON example
+
+In the following example, the fields exported by {beatname_uc} include a
+field, `inner`, whose value is a JSON object encoded as a string:
+
+[source,json]
+-----------------------------------------------------
+{ "outer": "value", "inner": "{\"data\": \"value\"}" }
+-----------------------------------------------------
+
+The following configuration decodes the inner JSON object:
+
+["source","yaml",subs="attributes"]
+-----------------------------------------------------
+{beatname_lc}.inputs:
+- type: log
+  paths:
+    - input.json
+  json.keys_under_root: true
+
+processors:
+  - decode_json_fields:
+      fields: ["inner"]
+
+output.console.pretty: true
+-----------------------------------------------------
+
+The resulting output looks something like this:
+
+["source","json",subs="attributes"]
+-----------------------------------------------------
+{
+  "@timestamp": "2016-12-06T17:38:11.541Z",
+  "beat": {
+    "hostname": "host.example.com",
+    "name": "host.example.com",
+    "version": "{version}"
+  },
+  "inner": {
+    "data": "value"
+  },
+  "input": {
+    "type": "log",
+  },
+  "offset": 55,
+  "outer": "value",
+  "source": "input.json",
+  "type": "log"
+}
+-----------------------------------------------------
+
+include::{libbeat-dir}/docs/processors-using.asciidoc[]

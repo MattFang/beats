@@ -1,180 +1,180 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package publish
 
 import (
-	"errors"
-	"fmt"
-	"sync"
+	"net"
 
+	"github.com/pkg/errors"
+
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/libbeat/publisher"
-	"github.com/nranchev/go-libGeoIP"
+	"github.com/elastic/beats/libbeat/processors"
+	"github.com/elastic/beats/packetbeat/pb"
 )
 
-type Transactions interface {
-	PublishTransaction(common.MapStr) bool
+type TransactionPublisher struct {
+	done      chan struct{}
+	pipeline  beat.Pipeline
+	canDrop   bool
+	processor transProcessor
 }
 
-type Flows interface {
-	PublishFlows([]common.MapStr) bool
-}
-
-type PacketbeatPublisher struct {
-	pub    publisher.Publisher
-	client publisher.Client
-
-	topo           TopologyProvider
-	geoLite        *libgeo.GeoIP
+type transProcessor struct {
 	ignoreOutgoing bool
-
-	wg   sync.WaitGroup
-	done chan struct{}
-
-	trans chan common.MapStr
-	flows chan []common.MapStr
-}
-
-type ChanTransactions struct {
-	Channel chan common.MapStr
-}
-
-// XXX: currently implemented by libbeat publisher. This functionality is only
-// required by packetbeat. Source for TopologyProvider should become local to
-// packetbeat.
-type TopologyProvider interface {
-	IsPublisherIP(ip string) bool
-	GetServerName(ip string) string
-	GeoLite() *libgeo.GeoIP
-}
-
-func (t *ChanTransactions) PublishTransaction(event common.MapStr) bool {
-	t.Channel <- event
-	return true
+	localIPs       []net.IP // TODO: Periodically update this list.
+	name           string
 }
 
 var debugf = logp.MakeDebug("publish")
 
-func NewPublisher(
-	pub publisher.Publisher,
-	hwm, bulkHWM int,
+func NewTransactionPublisher(
+	name string,
+	pipeline beat.Pipeline,
 	ignoreOutgoing bool,
-) (*PacketbeatPublisher, error) {
-	topo, ok := pub.(TopologyProvider)
-	if !ok {
-		return nil, errors.New("Requires topology provider")
+	canDrop bool,
+) (*TransactionPublisher, error) {
+	addrs, err := common.LocalIPAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var localIPs []net.IP
+	for _, addr := range addrs {
+		if !addr.IsLoopback() {
+			localIPs = append(localIPs, addr)
+		}
 	}
 
-	return &PacketbeatPublisher{
-		pub:            pub,
-		topo:           topo,
-		geoLite:        topo.GeoLite(),
-		ignoreOutgoing: ignoreOutgoing,
-		client:         pub.Connect(),
-		done:           make(chan struct{}),
-		trans:          make(chan common.MapStr, hwm),
-		flows:          make(chan []common.MapStr, bulkHWM),
+	p := &TransactionPublisher{
+		done:     make(chan struct{}),
+		pipeline: pipeline,
+		canDrop:  canDrop,
+		processor: transProcessor{
+			localIPs:       localIPs,
+			name:           name,
+			ignoreOutgoing: ignoreOutgoing,
+		},
+	}
+	return p, nil
+}
+
+func (p *TransactionPublisher) Stop() {
+	close(p.done)
+}
+
+func (p *TransactionPublisher) CreateReporter(
+	config *common.Config,
+) (func(beat.Event), error) {
+
+	// load and register the module it's fields, tags and processors settings
+	meta := struct {
+		Event      common.EventMetadata    `config:",inline"`
+		Processors processors.PluginConfig `config:"processors"`
+	}{}
+	if err := config.Unpack(&meta); err != nil {
+		return nil, err
+	}
+
+	processors, err := processors.New(meta.Processors)
+	if err != nil {
+		return nil, err
+	}
+
+	clientConfig := beat.ClientConfig{
+		Processing: beat.ProcessingConfig{
+			EventMetadata: meta.Event,
+			Processor:     processors,
+		},
+	}
+	if p.canDrop {
+		clientConfig.PublishMode = beat.DropIfFull
+	}
+
+	client, err := p.pipeline.ConnectWith(clientConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// start worker, so post-processing and processor-pipeline
+	// can work concurrently to sniffer acquiring new events
+	ch := make(chan beat.Event, 3)
+	go p.worker(ch, client)
+	return func(event beat.Event) {
+		select {
+		case ch <- event:
+		case <-p.done:
+			ch = nil // stop serving more send requests
+		}
 	}, nil
 }
 
-func (t *PacketbeatPublisher) PublishTransaction(event common.MapStr) bool {
-	select {
-	case t.trans <- event:
-		return true
-	default:
-		// drop event if queue is full
-		return false
+func (p *TransactionPublisher) worker(ch chan beat.Event, client beat.Client) {
+	for {
+		select {
+		case <-p.done:
+			return
+		case event := <-ch:
+			pub, _ := p.processor.Run(&event)
+			if pub != nil {
+				client.Publish(*pub)
+			}
+		}
 	}
 }
 
-func (t *PacketbeatPublisher) PublishFlows(event []common.MapStr) bool {
-	select {
-	case t.flows <- event:
-		return true
-	case <-t.done:
-		// drop event, if worker has been stopped
-		return false
-	}
-}
-
-func (t *PacketbeatPublisher) Start() {
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		for {
-			select {
-			case <-t.done:
-				return
-			case event := <-t.trans:
-				t.onTransaction(event)
-			}
-		}
-	}()
-
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		for {
-			select {
-			case <-t.done:
-				return
-			case events := <-t.flows:
-				t.onFlow(events)
-			}
-		}
-	}()
-}
-
-func (t *PacketbeatPublisher) Stop() {
-	t.client.Close()
-	close(t.done)
-	t.wg.Wait()
-}
-
-func (t *PacketbeatPublisher) onTransaction(event common.MapStr) {
+func (p *transProcessor) Run(event *beat.Event) (*beat.Event, error) {
 	if err := validateEvent(event); err != nil {
 		logp.Warn("Dropping invalid event: %v", err)
-		return
+		return nil, nil
 	}
 
-	if !t.normalizeTransAddr(event) {
-		return
+	fields, err := MarshalPacketbeatFields(event, p.localIPs)
+	if err != nil {
+		return nil, err
 	}
 
-	t.client.PublishEvent(event)
-}
-
-func (t *PacketbeatPublisher) onFlow(events []common.MapStr) {
-	pub := events[:0]
-	for _, event := range events {
-		if err := validateEvent(event); err != nil {
-			logp.Warn("Dropping invalid event: %v", err)
-			continue
+	if fields != nil {
+		if p.ignoreOutgoing && fields.Network.Direction == "outbound" {
+			debugf("Ignore outbound transaction on: %s -> %s",
+				fields.Source.IP, fields.Destination.IP)
+			return nil, nil
 		}
-
-		if !t.addGeoIPToFlow(event) {
-			continue
-		}
-
-		pub = append(pub, event)
 	}
 
-	t.client.PublishEvents(pub)
+	return event, nil
 }
 
 // filterEvent validates an event for common required fields with types.
 // If event is to be filtered out the reason is returned as error.
-func validateEvent(event common.MapStr) error {
-	ts, ok := event["@timestamp"]
-	if !ok {
-		return errors.New("missing '@timestamp' field from event")
+func validateEvent(event *beat.Event) error {
+	fields := event.Fields
+
+	if event.Timestamp.IsZero() {
+		return errors.New("missing '@timestamp'")
 	}
 
-	_, ok = ts.(common.Time)
-	if !ok {
-		return errors.New("invalid '@timestamp' field from event")
+	_, ok := fields["@timestamp"]
+	if ok {
+		return errors.New("duplicate '@timestamp' field from event")
 	}
 
-	t, ok := event["type"]
+	t, ok := fields["type"]
 	if !ok {
 		return errors.New("missing 'type' field from event")
 	}
@@ -187,124 +187,22 @@ func validateEvent(event common.MapStr) error {
 	return nil
 }
 
-func (p *PacketbeatPublisher) normalizeTransAddr(event common.MapStr) bool {
-	debugf("normalize address for: %v", event)
+// MarshalPacketbeatFields marshals data contained in the _packetbeat field
+// into the event and removes the _packetbeat key.
+func MarshalPacketbeatFields(event *beat.Event, localIPs []net.IP) (*pb.Fields, error) {
+	defer delete(event.Fields, pb.FieldsKey)
 
-	var srcServer, dstServer string
-	src, ok := event["src"].(*common.Endpoint)
-	debugf("has src: %v", ok)
-	if ok {
-		// check if it's outgoing transaction (as client)
-		isOutgoing := p.topo.IsPublisherIP(src.Ip)
-		if isOutgoing {
-			if p.ignoreOutgoing {
-				// duplicated transaction -> ignore it
-				debugf("Ignore duplicated transaction on: %s -> %s", srcServer, dstServer)
-				return false
-			}
-
-			//outgoing transaction
-			event["direction"] = "out"
-		}
-
-		srcServer = p.topo.GetServerName(src.Ip)
-		event["client_ip"] = src.Ip
-		event["client_port"] = src.Port
-		event["client_proc"] = src.Proc
-		event["client_server"] = srcServer
-		delete(event, "src")
+	fields, err := pb.GetFields(event.Fields)
+	if err != nil || fields == nil {
+		return nil, err
 	}
 
-	dst, ok := event["dst"].(*common.Endpoint)
-	debugf("has dst: %v", ok)
-	if ok {
-		dstServer = p.topo.GetServerName(dst.Ip)
-		event["ip"] = dst.Ip
-		event["port"] = dst.Port
-		event["proc"] = dst.Proc
-		event["server"] = dstServer
-		delete(event, "dst")
-
-		//check if it's incoming transaction (as server)
-		if p.topo.IsPublisherIP(dst.Ip) {
-			// incoming transaction
-			event["direction"] = "in"
-		}
-
+	if err = fields.ComputeValues(localIPs); err != nil {
+		return nil, err
 	}
 
-	if p.geoLite != nil {
-		realIP, exists := event["real_ip"]
-		if exists && len(realIP.(common.NetString)) > 0 {
-			loc := p.geoLite.GetLocationByIP(string(realIP.(common.NetString)))
-			if loc != nil && loc.Latitude != 0 && loc.Longitude != 0 {
-				loc := fmt.Sprintf("%f, %f", loc.Latitude, loc.Longitude)
-				event["client_location"] = loc
-			}
-		} else {
-			if len(srcServer) == 0 && src != nil { // only for external IP addresses
-				loc := p.geoLite.GetLocationByIP(src.Ip)
-				if loc != nil && loc.Latitude != 0 && loc.Longitude != 0 {
-					loc := fmt.Sprintf("%f, %f", loc.Latitude, loc.Longitude)
-					event["client_location"] = loc
-				}
-			}
-		}
+	if err = fields.MarshalMapStr(event.Fields); err != nil {
+		return nil, err
 	}
-
-	return true
-}
-
-func (p *PacketbeatPublisher) addGeoIPToFlow(event common.MapStr) bool {
-
-	getLocation := func(host common.MapStr, ip_type string) string {
-
-		ip, exists := host[ip_type]
-		if !exists {
-			return ""
-		}
-
-		str, ok := ip.(string)
-		if !ok {
-			logp.Warn("IP address must be string")
-			return ""
-		}
-		loc := p.geoLite.GetLocationByIP(str)
-		if loc == nil || loc.Latitude == 0 || loc.Longitude == 0 {
-			return ""
-		}
-
-		return fmt.Sprintf("%f, %f", loc.Latitude, loc.Longitude)
-	}
-
-	if p.geoLite == nil {
-		return true
-	}
-
-	ipFieldNames := [][]string{
-		{"ip", "ip_location"},
-		{"outter_ip", "outter_ip_location"},
-		{"ipv6", "ipv6_location"},
-		{"outter_ipv6", "outter_ipv6_location"},
-	}
-
-	source := event["source"].(common.MapStr)
-	dest := event["dest"].(common.MapStr)
-
-	for _, name := range ipFieldNames {
-
-		loc := getLocation(source, name[0])
-		if loc != "" {
-			source[name[1]] = loc
-		}
-
-		loc = getLocation(dest, name[0])
-		if loc != "" {
-			dest[name[1]] = loc
-		}
-	}
-	event["source"] = source
-	event["dest"] = dest
-
-	return true
+	return fields, nil
 }

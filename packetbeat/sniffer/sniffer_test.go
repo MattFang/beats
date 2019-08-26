@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package sniffer
@@ -9,48 +26,48 @@ import (
 )
 
 func TestSniffer_afpacketComputeSize(t *testing.T) {
-	var frame_size, block_size, num_blocks int
+	var frameSize, blockSize, numBlocks int
 	var err error
 
-	frame_size, block_size, num_blocks, err = afpacketComputeSize(30, 1514, 4096)
+	frameSize, blockSize, numBlocks, err = afpacketComputeSize(30, 1514, 4096)
 	if err != nil {
 		t.Error(err)
 	}
-	if frame_size != 2048 || block_size != 2048*128 || num_blocks != 120 {
-		t.Error("Bad result", frame_size, block_size, num_blocks)
+	if frameSize != 2048 || blockSize != 2048*128 || numBlocks != 120 {
+		t.Error("Bad result", frameSize, blockSize, numBlocks)
 	}
-	if block_size*num_blocks > 30*1024*1024 {
-		t.Error("Value too big", block_size, num_blocks)
+	if blockSize*numBlocks > 30*1024*1024 {
+		t.Error("Value too big", blockSize, numBlocks)
 	}
 
-	frame_size, block_size, num_blocks, err = afpacketComputeSize(1, 1514, 4096)
+	frameSize, blockSize, numBlocks, err = afpacketComputeSize(1, 1514, 4096)
 	if err != nil {
 		t.Error(err)
 	}
-	if frame_size != 2048 || block_size != 2048*128 || num_blocks != 4 {
-		t.Error("Bad result", block_size, num_blocks)
+	if frameSize != 2048 || blockSize != 2048*128 || numBlocks != 4 {
+		t.Error("Bad result", blockSize, numBlocks)
 	}
-	if block_size*num_blocks > 1*1024*1024 {
-		t.Error("Value too big", block_size, num_blocks)
+	if blockSize*numBlocks > 1*1024*1024 {
+		t.Error("Value too big", blockSize, numBlocks)
 	}
 
-	frame_size, block_size, num_blocks, err = afpacketComputeSize(0, 1514, 4096)
+	frameSize, blockSize, numBlocks, err = afpacketComputeSize(0, 1514, 4096)
 	if err == nil {
 		t.Error("Expected an error")
 	}
 
 	// 16436 is the default MTU size of the loopback interface
-	frame_size, block_size, num_blocks, err = afpacketComputeSize(30, 16436, 4096)
-	if frame_size != 4096*5 || block_size != 4096*5*128 || num_blocks != 12 {
-		t.Error("Bad result", frame_size, block_size, num_blocks)
+	frameSize, blockSize, numBlocks, err = afpacketComputeSize(30, 16436, 4096)
+	if frameSize != 4096*5 || blockSize != 4096*5*128 || numBlocks != 12 {
+		t.Error("Bad result", frameSize, blockSize, numBlocks)
 	}
 
-	frame_size, block_size, num_blocks, err = afpacketComputeSize(3, 16436, 4096)
+	frameSize, blockSize, numBlocks, err = afpacketComputeSize(3, 16436, 4096)
 	if err != nil {
 		t.Error(err)
 	}
-	if frame_size != 4096*5 || block_size != 4096*5*128 || num_blocks != 1 {
-		t.Error("Bad result", frame_size, block_size, num_blocks)
+	if frameSize != 4096*5 || blockSize != 4096*5*128 || numBlocks != 1 {
+		t.Error("Bad result", frameSize, blockSize, numBlocks)
 	}
 }
 

@@ -1,46 +1,60 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package redis
 
 import (
 	"bytes"
-	"expvar"
 	"time"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/monitoring"
 
+	"github.com/elastic/beats/packetbeat/pb"
 	"github.com/elastic/beats/packetbeat/procs"
 	"github.com/elastic/beats/packetbeat/protos"
 	"github.com/elastic/beats/packetbeat/protos/applayer"
 	"github.com/elastic/beats/packetbeat/protos/tcp"
-	"github.com/elastic/beats/packetbeat/publish"
 )
 
 type stream struct {
 	applayer.Stream
 	parser   parser
-	tcptuple *common.TcpTuple
+	tcptuple *common.TCPTuple
 }
 
 type redisConnectionData struct {
-	Streams   [2]*stream
-	requests  messageList
-	responses messageList
-}
-
-type messageList struct {
-	head, tail *redisMessage
+	streams   [2]*stream
+	requests  MessageQueue
+	responses MessageQueue
 }
 
 // Redis protocol plugin
-type Redis struct {
+type redisPlugin struct {
 	// config
-	Ports        []int
-	SendRequest  bool
-	SendResponse bool
-
+	ports              []int
+	sendRequest        bool
+	sendResponse       bool
 	transactionTimeout time.Duration
+	queueConfig        MessageQueueConfig
 
-	results publish.Transactions
+	results protos.Reporter
 }
 
 var (
@@ -49,7 +63,8 @@ var (
 )
 
 var (
-	unmatchedResponses = expvar.NewInt("redis.unmatched_responses")
+	unmatchedResponses = monitoring.NewInt(nil, "redis.unmatched_responses")
+	unmatchedRequests  = monitoring.NewInt(nil, "redis.unmatched_requests")
 )
 
 func init() {
@@ -58,10 +73,10 @@ func init() {
 
 func New(
 	testMode bool,
-	results publish.Transactions,
+	results protos.Reporter,
 	cfg *common.Config,
 ) (protos.Plugin, error) {
-	p := &Redis{}
+	p := &redisPlugin{}
 	config := defaultConfig
 	if !testMode {
 		if err := cfg.Unpack(&config); err != nil {
@@ -75,7 +90,7 @@ func New(
 	return p, nil
 }
 
-func (redis *Redis) init(results publish.Transactions, config *redisConfig) error {
+func (redis *redisPlugin) init(results protos.Reporter, config *redisConfig) error {
 	redis.setFromConfig(config)
 
 	redis.results = results
@@ -84,15 +99,16 @@ func (redis *Redis) init(results publish.Transactions, config *redisConfig) erro
 	return nil
 }
 
-func (redis *Redis) setFromConfig(config *redisConfig) {
-	redis.Ports = config.Ports
-	redis.SendRequest = config.SendRequest
-	redis.SendResponse = config.SendResponse
+func (redis *redisPlugin) setFromConfig(config *redisConfig) {
+	redis.ports = config.Ports
+	redis.sendRequest = config.SendRequest
+	redis.sendResponse = config.SendResponse
 	redis.transactionTimeout = config.TransactionTimeout
+	redis.queueConfig = config.QueueLimits
 }
 
-func (redis *Redis) GetPorts() []int {
-	return redis.Ports
+func (redis *redisPlugin) GetPorts() []int {
+	return redis.ports
 }
 
 func (s *stream) PrepareForNewMessage() {
@@ -101,55 +117,61 @@ func (s *stream) PrepareForNewMessage() {
 	parser.reset()
 }
 
-func (redis *Redis) ConnectionTimeout() time.Duration {
+func (redis *redisPlugin) ConnectionTimeout() time.Duration {
 	return redis.transactionTimeout
 }
 
-func (redis *Redis) Parse(
+func (redis *redisPlugin) Parse(
 	pkt *protos.Packet,
-	tcptuple *common.TcpTuple,
+	tcptuple *common.TCPTuple,
 	dir uint8,
 	private protos.ProtocolData,
 ) protos.ProtocolData {
 	defer logp.Recover("ParseRedis exception")
 
-	conn := ensureRedisConnection(private)
+	conn := redis.ensureRedisConnection(private)
 	conn = redis.doParse(conn, pkt, tcptuple, dir)
 	if conn == nil {
 		return nil
 	}
 	return conn
 }
+func (redis *redisPlugin) newConnectionData() *redisConnectionData {
+	return &redisConnectionData{
+		requests:  NewMessageQueue(redis.queueConfig),
+		responses: NewMessageQueue(redis.queueConfig),
+	}
+}
 
-func ensureRedisConnection(private protos.ProtocolData) *redisConnectionData {
+func (redis *redisPlugin) ensureRedisConnection(private protos.ProtocolData) *redisConnectionData {
 	if private == nil {
-		return &redisConnectionData{}
+		return redis.newConnectionData()
 	}
 
 	priv, ok := private.(*redisConnectionData)
 	if !ok {
 		logp.Warn("redis connection data type error, create new one")
-		return &redisConnectionData{}
+		return redis.newConnectionData()
 	}
 	if priv == nil {
 		logp.Warn("Unexpected: redis connection data not set, create new one")
-		return &redisConnectionData{}
+		return redis.newConnectionData()
 	}
 
 	return priv
 }
 
-func (redis *Redis) doParse(
+func (redis *redisPlugin) doParse(
 	conn *redisConnectionData,
 	pkt *protos.Packet,
-	tcptuple *common.TcpTuple,
+	tcptuple *common.TCPTuple,
 	dir uint8,
 ) *redisConnectionData {
 
-	st := conn.Streams[dir]
+	st := conn.streams[dir]
 	if st == nil {
 		st = newStream(pkt.Ts, tcptuple)
-		conn.Streams[dir] = st
+		conn.streams[dir] = st
 		if isDebug {
 			debugf("new stream: %p (dir=%v, len=%v)", st, dir, len(pkt.Payload))
 		}
@@ -174,7 +196,7 @@ func (redis *Redis) doParse(
 		if !ok {
 			// drop this tcp stream. Will retry parsing with the next
 			// segment in it
-			conn.Streams[dir] = nil
+			conn.streams[dir] = nil
 			if isDebug {
 				debugf("Ignore Redis message. Drop tcp stream. Try parsing with the next segment")
 			}
@@ -188,10 +210,10 @@ func (redis *Redis) doParse(
 
 		msg := st.parser.message
 		if isDebug {
-			if msg.IsRequest {
-				debugf("REDIS (%p) request message: %s", conn, msg.Message)
+			if msg.isRequest {
+				debugf("REDIS (%p) request message: %s", conn, msg.message)
 			} else {
-				debugf("REDIS (%p) response message: %s", conn, msg.Message)
+				debugf("REDIS (%p) response message: %s", conn, msg.message)
 			}
 		}
 
@@ -203,119 +225,111 @@ func (redis *Redis) doParse(
 	return conn
 }
 
-func newStream(ts time.Time, tcptuple *common.TcpTuple) *stream {
+func newStream(ts time.Time, tcptuple *common.TCPTuple) *stream {
 	s := &stream{
 		tcptuple: tcptuple,
 	}
 	s.parser.message = newMessage(ts)
-	s.Stream.Init(tcp.TCP_MAX_DATA_IN_STREAM)
+	s.Stream.Init(tcp.TCPMaxDataInStream)
 	return s
 }
 
 func newMessage(ts time.Time) *redisMessage {
-	return &redisMessage{Ts: ts}
+	return &redisMessage{ts: ts}
 }
 
-func (redis *Redis) handleRedis(
+func (redis *redisPlugin) handleRedis(
 	conn *redisConnectionData,
 	m *redisMessage,
-	tcptuple *common.TcpTuple,
+	tcptuple *common.TCPTuple,
 	dir uint8,
 ) {
-	m.TcpTuple = *tcptuple
-	m.Direction = dir
-	m.CmdlineTuple = procs.ProcWatcher.FindProcessesTuple(tcptuple.IpPort())
+	m.tcpTuple = *tcptuple
+	m.direction = dir
+	m.cmdlineTuple = procs.ProcWatcher.FindProcessesTupleTCP(tcptuple.IPPort())
 
-	if m.IsRequest {
-		conn.requests.append(m) // wait for response
+	if m.isRequest {
+		// wait for response
+		if evicted := conn.requests.Append(m); evicted > 0 {
+			unmatchedRequests.Add(int64(evicted))
+		}
 	} else {
-		conn.responses.append(m)
+		if evicted := conn.responses.Append(m); evicted > 0 {
+			unmatchedResponses.Add(int64(evicted))
+		}
 		redis.correlate(conn)
 	}
 }
 
-func (redis *Redis) correlate(conn *redisConnectionData) {
+func (redis *redisPlugin) correlate(conn *redisConnectionData) {
 	// drop responses with missing requests
-	if conn.requests.empty() {
-		for !conn.responses.empty() {
+	if conn.requests.IsEmpty() {
+		for !conn.responses.IsEmpty() {
 			debugf("Response from unknown transaction. Ignoring")
 			unmatchedResponses.Add(1)
-			conn.responses.pop()
+			conn.responses.Pop()
 		}
 		return
 	}
 
 	// merge requests with responses into transactions
-	for !conn.responses.empty() && !conn.requests.empty() {
-		requ := conn.requests.pop()
-		resp := conn.responses.pop()
-
+	for !conn.responses.IsEmpty() && !conn.requests.IsEmpty() {
+		requ, okReq := conn.requests.Pop().(*redisMessage)
+		resp, okResp := conn.responses.Pop().(*redisMessage)
+		if !okReq || !okResp {
+			logp.Err("invalid type found in message queue")
+			continue
+		}
 		if redis.results != nil {
 			event := redis.newTransaction(requ, resp)
-			redis.results.PublishTransaction(event)
+			redis.results(event)
 		}
 	}
 }
 
-func (redis *Redis) newTransaction(requ, resp *redisMessage) common.MapStr {
-	error := common.OK_STATUS
-	if resp.IsError {
-		error = common.ERROR_STATUS
-	}
-
-	var returnValue map[string]common.NetString
-	if resp.IsError {
-		returnValue = map[string]common.NetString{
-			"error": resp.Message,
-		}
-	} else {
-		returnValue = map[string]common.NetString{
-			"return_value": resp.Message,
-		}
-	}
-
-	src := &common.Endpoint{
-		Ip:   requ.TcpTuple.Src_ip.String(),
-		Port: requ.TcpTuple.Src_port,
-		Proc: string(requ.CmdlineTuple.Src),
-	}
-	dst := &common.Endpoint{
-		Ip:   requ.TcpTuple.Dst_ip.String(),
-		Port: requ.TcpTuple.Dst_port,
-		Proc: string(requ.CmdlineTuple.Dst),
-	}
-	if requ.Direction == tcp.TcpDirectionReverse {
+func (redis *redisPlugin) newTransaction(requ, resp *redisMessage) beat.Event {
+	source, destination := common.MakeEndpointPair(requ.tcpTuple.BaseTuple, requ.cmdlineTuple)
+	src, dst := &source, &destination
+	if requ.direction == tcp.TCPDirectionReverse {
 		src, dst = dst, src
 	}
 
-	// resp_time in milliseconds
-	responseTime := int32(resp.Ts.Sub(requ.Ts).Nanoseconds() / 1e6)
+	evt, pbf := pb.NewBeatEvent(requ.ts)
+	pbf.SetSource(src)
+	pbf.SetDestination(dst)
+	pbf.Source.Bytes = int64(requ.size)
+	pbf.Destination.Bytes = int64(resp.size)
+	pbf.Event.Dataset = "redis"
+	pbf.Event.Start = requ.ts
+	pbf.Event.End = resp.ts
+	pbf.Network.Transport = "tcp"
+	pbf.Network.Protocol = pbf.Event.Dataset
 
-	event := common.MapStr{
-		"@timestamp":   common.Time(requ.Ts),
-		"type":         "redis",
-		"status":       error,
-		"responsetime": responseTime,
-		"redis":        returnValue,
-		"method":       common.NetString(bytes.ToUpper(requ.Method)),
-		"resource":     requ.Path,
-		"query":        requ.Message,
-		"bytes_in":     uint64(requ.Size),
-		"bytes_out":    uint64(resp.Size),
-		"src":          src,
-		"dst":          dst,
-	}
-	if redis.SendRequest {
-		event["request"] = requ.Message
-	}
-	if redis.SendResponse {
-		event["response"] = resp.Message
+	fields := evt.Fields
+	fields["type"] = pbf.Event.Dataset
+	fields["method"] = common.NetString(bytes.ToUpper(requ.method))
+	fields["resource"] = requ.path
+	fields["query"] = requ.message
+
+	if resp.isError {
+		evt.PutValue("status", common.ERROR_STATUS)
+		evt.PutValue("redis.error", resp.message)
+	} else {
+		evt.PutValue("status", common.OK_STATUS)
+		evt.PutValue("redis.return_value", resp.message)
 	}
 
-	return event
+	if redis.sendRequest {
+		fields["request"] = requ.message
+	}
+	if redis.sendResponse {
+		fields["response"] = resp.message
+	}
+
+	return evt
 }
 
-func (redis *Redis) GapInStream(tcptuple *common.TcpTuple, dir uint8,
+func (redis *redisPlugin) GapInStream(tcptuple *common.TCPTuple, dir uint8,
 	nbytes int, private protos.ProtocolData) (priv protos.ProtocolData, drop bool) {
 
 	// tsg: being packet loss tolerant is probably not very useful for Redis,
@@ -324,41 +338,10 @@ func (redis *Redis) GapInStream(tcptuple *common.TcpTuple, dir uint8,
 	return private, true
 }
 
-func (redis *Redis) ReceivedFin(tcptuple *common.TcpTuple, dir uint8,
+func (redis *redisPlugin) ReceivedFin(tcptuple *common.TCPTuple, dir uint8,
 	private protos.ProtocolData) protos.ProtocolData {
 
 	// TODO: check if we have pending data that we can send up the stack
 
 	return private
-}
-
-func (ml *messageList) append(msg *redisMessage) {
-	if ml.tail == nil {
-		ml.head = msg
-	} else {
-		ml.tail.next = msg
-	}
-	msg.next = nil
-	ml.tail = msg
-}
-
-func (ml *messageList) empty() bool {
-	return ml.head == nil
-}
-
-func (ml *messageList) pop() *redisMessage {
-	if ml.head == nil {
-		return nil
-	}
-
-	msg := ml.head
-	ml.head = ml.head.next
-	if ml.head == nil {
-		ml.tail = nil
-	}
-	return msg
-}
-
-func (ml *messageList) last() *redisMessage {
-	return ml.tail
 }

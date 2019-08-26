@@ -1,5 +1,7 @@
 from packetbeat import BaseTest
 
+import six
+
 # import pprint
 #
 # pp = pprint.PrettyPrinter()
@@ -10,6 +12,7 @@ from packetbeat import BaseTest
 
 
 class Test(BaseTest):
+
     def _run(self, pcap):
         self.render_config_template()
         self.run_packetbeat(pcap=pcap,
@@ -20,13 +23,13 @@ class Test(BaseTest):
 
     def assert_common(self, objs):
         # check client ip are not mixed up
-        assert all(o['client_ip'] == '192.168.188.37' for o in objs)
-        assert all(o['ip'] == '192.168.188.38' for o in objs)
-        assert all(o['port'] == 11211 for o in objs)
+        assert all(o['client.ip'] == '192.168.188.37' for o in objs)
+        assert all(o['server.ip'] == '192.168.188.38' for o in objs)
+        assert all(o['server.port'] == 11211 for o in objs)
 
         # check transport layer always tcp
         assert all(o['type'] == 'memcache' for o in objs)
-        assert all(o['transport'] == 'tcp' for o in objs)
+        assert all(o['network.transport'] == 'tcp' for o in objs)
         assert all(o['memcache.protocol_type'] == 'binary' for o in objs)
 
     def test_store_load(self):
@@ -75,38 +78,28 @@ class Test(BaseTest):
         assert sets['k1']['memcache.request.bytes'] == 100
         assert sets['k2']['memcache.request.bytes'] == 20
         assert sets['k3']['memcache.request.bytes'] == 10
-        assert all(o['memcache.request.opcode'] == 'Set'
-                   for o in sets.itervalues())
-        assert all('memcache.response.cas_unique' in o
-                   for o in sets.itervalues())
-        assert all(o['memcache.response.status'] == 'Success'
-                   for o in sets.itervalues())
+        assert all(o['memcache.request.opcode'] == 'Set' for o in six.itervalues(sets))
+        assert all('memcache.response.cas_unique' in o for o in six.itervalues(sets))
+        assert all(o['memcache.response.status'] == 'Success' for o in six.itervalues(sets))
         assert all((o['memcache.request.opaque'] ==
-                    o['memcache.response.opaque'])
-                   for o in sets.itervalues())
+                    o['memcache.response.opaque']) for o in six.itervalues(sets))
 
         gets = dict([(o['memcache.request.keys'][0], o) for o in objs[3:8]])
         # check all gets are quiet (transaction piping)
-        assert all(o['memcache.request.opcode'] == 'GetKQ'
-                   for o in gets.itervalues())
-        assert all(o['memcache.request.command'] == 'get'
-                   for o in gets.itervalues())
-        assert all(o['memcache.request.quiet']
-                   for o in gets.itervalues())
+        assert all(o['memcache.request.opcode'] == 'GetKQ' for o in six.itervalues(gets))
+        assert all(o['memcache.request.command'] == 'get' for o in six.itervalues(gets))
+        assert all(o['memcache.request.quiet'] for o in six.itervalues(gets))
         assert 'memcache.response.opcode' not in gets['x']
         assert 'memcache.response.opcode' not in gets['y']
 
         # gets with actual return values
         gets = dict((k, v)
-                    for k, v in gets.iteritems()
+                    for k, v in six.iteritems(gets)
                     if k in ['k1', 'k2', 'k3'])
-        assert all('memcache.response.cas_unique' in o
-                   for o in gets.itervalues())
-        assert all(o['memcache.response.status'] == 'Success'
-                   for o in gets.itervalues())
+        assert all('memcache.response.cas_unique' in o for o in six.itervalues(gets))
+        assert all(o['memcache.response.status'] == 'Success' for o in six.itervalues(gets))
         assert all((o['memcache.request.opaque'] ==
-                    o['memcache.response.opaque'])
-                   for o in gets.itervalues())
+                    o['memcache.response.opaque']) for o in six.itervalues(gets))
 
         noop = objs[8]
         assert noop['memcache.request.command'] == 'noop'

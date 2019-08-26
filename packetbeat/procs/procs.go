@@ -1,451 +1,341 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package procs
 
 import (
-	"bufio"
-	"bytes"
-	"errors"
-	"fmt"
-	"io"
-	"io/ioutil"
 	"net"
-	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/packetbeat/protos/applayer"
+	"github.com/elastic/go-sysinfo"
 )
 
-type SocketInfo struct {
-	Src_ip, Dst_ip     net.IP
-	Src_port, Dst_port uint16
+// This controls how often process info for a running process is reloaded
+// A big value means less unnecessary refreshes at a higher risk of missing
+// a PID being recycled by the OS
+const processCacheExpiration = time.Second * 30
 
-	Uid   uint16
-	Inode int64
+var (
+	anyIPv4 = net.IPv4zero.String()
+	anyIPv6 = net.IPv6unspecified.String()
+)
+
+type endpoint struct {
+	address string
+	port    uint16
 }
 
-type PortProcMapping struct {
-	Port uint16
-	Pid  int
-	Proc *Process
+type portProcMapping struct {
+	endpoint endpoint
+	pid      int
+	proc     *process
 }
 
-type Process struct {
-	Name    string
-	Grepper string
-	Pids    []int
+type process struct {
+	pid, ppid      int
+	name, exe, cwd string
+	args           []string
+	startTime      time.Time
 
-	proc *ProcessesWatcher
+	// To control cache expiration
+	expiration time.Time
+}
 
-	RefreshPidsTimer <-chan time.Time
+// Allow the OS-dependant implementation to be replaced by a mock for testing
+type processWatcherImpl interface {
+	// GetLocalPortToPIDMapping returns the list of local port numbers and the PID
+	// that owns them.
+	GetLocalPortToPIDMapping(transport applayer.Transport) (ports map[endpoint]int, err error)
+	// GetProcess returns the process metadata.
+	GetProcess(pid int) *process
+	// GetLocalIPs returns the list of local addresses.
+	GetLocalIPs() ([]net.IP, error)
 }
 
 type ProcessesWatcher struct {
-	PortProcMap   map[uint16]PortProcMapping
-	LastMapUpdate time.Time
-	Processes     []*Process
-	LocalAddrs    []net.IP
+	portProcMap  map[applayer.Transport]map[endpoint]portProcMapping
+	localAddrs   []net.IP
+	processCache map[int]*process
 
 	// config
-	ReadFromProc    bool
-	MaxReadFreq     time.Duration
-	RefreshPidsFreq time.Duration
+	enabled    bool
+	procConfig []ProcConfig
 
-	// test helpers
-	proc_prefix string
-	TestSignals *chan bool
-}
-
-type ProcsConfig struct {
-	Enabled            bool          `config:"enabled"`
-	Max_proc_read_freq time.Duration `config:"max_proc_read_freq"`
-	Monitored          []ProcConfig  `config:"monitored"`
-	Refresh_pids_freq  time.Duration `config:"refresh_pids_freq"`
-}
-
-type ProcConfig struct {
-	Process      string
-	Cmdline_grep string
+	impl processWatcherImpl
 }
 
 var ProcWatcher ProcessesWatcher
 
 func (proc *ProcessesWatcher) Init(config ProcsConfig) error {
+	return proc.initWithImpl(config, proc)
+}
 
-	proc.proc_prefix = ""
-	proc.PortProcMap = make(map[uint16]PortProcMapping)
-	proc.LastMapUpdate = time.Now()
-
-	proc.ReadFromProc = config.Enabled
-	if proc.ReadFromProc {
-		if runtime.GOOS != "linux" {
-			proc.ReadFromProc = false
-			logp.Info("Disabled /proc/ reading because not on linux")
-		} else {
-			logp.Info("Process matching enabled")
-		}
-	} else {
-		logp.Info("Process matching disabled")
+func (proc *ProcessesWatcher) initWithImpl(config ProcsConfig, impl processWatcherImpl) error {
+	proc.impl = impl
+	proc.portProcMap = map[applayer.Transport]map[endpoint]portProcMapping{
+		applayer.TransportUDP: make(map[endpoint]portProcMapping),
+		applayer.TransportTCP: make(map[endpoint]portProcMapping),
 	}
 
-	if config.Max_proc_read_freq == 0 {
-		proc.MaxReadFreq = 10 * time.Millisecond
-	} else {
-		proc.MaxReadFreq = config.Max_proc_read_freq
-	}
+	proc.processCache = make(map[int]*process)
 
-	if config.Refresh_pids_freq == 0 {
-		proc.RefreshPidsFreq = 1 * time.Second
+	proc.enabled = config.Enabled
+	if proc.enabled {
+		logp.Info("Process watcher enabled")
 	} else {
-		proc.RefreshPidsFreq = config.Refresh_pids_freq
+		logp.Info("Process watcher disabled")
 	}
 
 	// Read the local IP addresses
 	var err error
-	proc.LocalAddrs, err = common.LocalIpAddrs()
+	proc.localAddrs, err = impl.GetLocalIPs()
 	if err != nil {
 		logp.Err("Error getting local IP addresses: %s", err)
-		proc.LocalAddrs = []net.IP{}
+		proc.localAddrs = []net.IP{}
 	}
 
-	if proc.ReadFromProc {
-		for _, procConfig := range config.Monitored {
-
-			grepper := procConfig.Cmdline_grep
-			if len(grepper) == 0 {
-				grepper = procConfig.Process
-			}
-
-			p, err := NewProcess(proc, procConfig.Process, grepper, time.Tick(proc.RefreshPidsFreq))
-			if err != nil {
-				logp.Err("NewProcess: %s", err)
-			} else {
-				proc.Processes = append(proc.Processes, p)
-			}
-		}
-	}
+	proc.procConfig = config.Monitored
 
 	return nil
 }
 
-func NewProcess(proc *ProcessesWatcher, name string, grepper string,
-	refreshPidsTimer <-chan time.Time) (*Process, error) {
-
-	p := &Process{Name: name, proc: proc, Grepper: grepper,
-		RefreshPidsTimer: refreshPidsTimer}
-
-	// start periodic timer in its own goroutine
-	go p.RefreshPids()
-
-	return p, nil
+// FindProcessesTupleTCP looks up local process information for the source and
+// destination addresses of TCP tuple
+func (proc *ProcessesWatcher) FindProcessesTupleTCP(tuple *common.IPPortTuple) (procTuple *common.ProcessTuple) {
+	return proc.FindProcessesTuple(tuple, applayer.TransportTCP)
 }
 
-func (p *Process) RefreshPids() {
-	logp.Debug("procs", "In RefreshPids")
-	for range p.RefreshPidsTimer {
-		logp.Debug("procs", "In RefreshPids tick")
-		var err error
-		p.Pids, err = FindPidsByCmdlineGrep(p.proc.proc_prefix, p.Grepper)
-		if err != nil {
-			logp.Err("Error finding PID files for %s: %s", p.Name, err)
-		}
-		logp.Debug("procs", "RefreshPids found pids %s for process %s", p.Pids, p.Name)
-
-		if p.proc.TestSignals != nil {
-			*p.proc.TestSignals <- true
-		}
-	}
+// FindProcessesTupleUDP looks up local process information for the source and
+// destination addresses of UDP tuple
+func (proc *ProcessesWatcher) FindProcessesTupleUDP(tuple *common.IPPortTuple) (procTuple *common.ProcessTuple) {
+	return proc.FindProcessesTuple(tuple, applayer.TransportUDP)
 }
 
-func FindPidsByCmdlineGrep(prefix string, process string) ([]int, error) {
-	defer logp.Recover("FindPidsByCmdlineGrep exception")
-	pids := []int{}
+// FindProcessesTuple looks up local process information for the source and
+// destination addresses of a tuple for the given transport protocol
+func (proc *ProcessesWatcher) FindProcessesTuple(tuple *common.IPPortTuple, transport applayer.Transport) (procTuple *common.ProcessTuple) {
+	procTuple = &common.ProcessTuple{}
 
-	proc, err := os.Open(filepath.Join(prefix, "/proc"))
-	if err != nil {
-		return pids, fmt.Errorf("Open /proc: %s", err)
-	}
-	defer proc.Close()
-
-	names, err := proc.Readdirnames(0)
-	if err != nil {
-		return pids, fmt.Errorf("Readdirnames: %s", err)
-	}
-
-	for _, name := range names {
-		pid, err := strconv.Atoi(name)
-		if err != nil {
-			continue
-		}
-
-		cmdline, err := ioutil.ReadFile(filepath.Join(prefix, "/proc/", name, "cmdline"))
-		if err != nil {
-			continue
-		}
-
-		if strings.Index(string(cmdline), process) >= 0 {
-			pids = append(pids, pid)
-		}
-	}
-
-	return pids, nil
-}
-
-func (proc *ProcessesWatcher) FindProcessesTuple(tuple *common.IpPortTuple) (proc_tuple *common.CmdlineTuple) {
-	proc_tuple = &common.CmdlineTuple{}
-
-	if !proc.ReadFromProc {
+	if !proc.enabled {
 		return
 	}
 
-	if proc.IsLocalIp(tuple.Src_ip) {
-		logp.Debug("procs", "Looking for port %d", tuple.Src_port)
-		proc_tuple.Src = []byte(proc.FindProc(tuple.Src_port))
-		if len(proc_tuple.Src) > 0 {
-			logp.Debug("procs", "Found device %s for port %d", proc_tuple.Src, tuple.Src_port)
+	if proc.isLocalIP(tuple.SrcIP) {
+		if p := proc.findProc(tuple.SrcIP, tuple.SrcPort, transport); p != nil {
+			procTuple.Src.PID = p.pid
+			procTuple.Src.PPID = p.ppid
+			procTuple.Src.Name = p.name
+			procTuple.Src.Args = p.args
+			procTuple.Src.Exe = p.exe
+			procTuple.Src.StartTime = p.startTime
+			if logp.IsDebug("procs") {
+				logp.Debug("procs", "Found process '%s' (pid=%d) for %s:%d/%s", p.name, p.pid, tuple.SrcIP, tuple.SrcPort, transport)
+			}
 		}
 	}
 
-	if proc.IsLocalIp(tuple.Dst_ip) {
-		logp.Debug("procs", "Looking for port %d", tuple.Dst_port)
-		proc_tuple.Dst = []byte(proc.FindProc(tuple.Dst_port))
-		if len(proc_tuple.Dst) > 0 {
-			logp.Debug("procs", "Found device %s for port %d", proc_tuple.Dst, tuple.Dst_port)
+	if proc.isLocalIP(tuple.DstIP) {
+		if p := proc.findProc(tuple.DstIP, tuple.DstPort, transport); p != nil {
+			procTuple.Dst.PID = p.pid
+			procTuple.Dst.PPID = p.ppid
+			procTuple.Dst.Name = p.name
+			procTuple.Dst.Args = p.args
+			procTuple.Dst.Exe = p.exe
+			procTuple.Dst.StartTime = p.startTime
+			if logp.IsDebug("procs") {
+				logp.Debug("procs", "Found process '%s' (pid=%d) for %s:%d/%s", p.name, p.pid, tuple.DstIP, tuple.DstPort, transport)
+			}
 		}
 	}
 
 	return
 }
 
-func (proc *ProcessesWatcher) FindProc(port uint16) (procname string) {
-	procname = ""
+func (proc *ProcessesWatcher) findProc(address net.IP, port uint16, transport applayer.Transport) *process {
 	defer logp.Recover("FindProc exception")
 
-	p, exists := proc.PortProcMap[port]
+	procMap, ok := proc.portProcMap[transport]
+	if !ok {
+		return nil
+	}
+
+	p, exists := lookupMapping(address, port, procMap)
 	if exists {
-		return p.Proc.Name
+		return p.proc
 	}
 
-	now := time.Now()
+	proc.updateMap(transport)
 
-	if now.Sub(proc.LastMapUpdate) > proc.MaxReadFreq {
-		proc.LastMapUpdate = now
-		proc.UpdateMap()
-
-		// try again
-		p, exists := proc.PortProcMap[port]
-		if exists {
-			return p.Proc.Name
-		}
+	p, exists = lookupMapping(address, port, procMap)
+	if exists {
+		return p.proc
 	}
 
-	return ""
+	return nil
 }
 
-func hex_to_ipv4(word string) (net.IP, error) {
-	ip, err := strconv.ParseInt(word, 16, 64)
-	if err != nil {
-		return nil, err
-	}
-	return net.IPv4(byte(ip), byte(ip>>8), byte(ip>>16), byte(ip>>24)), nil
-}
-
-func hex_to_ipv6(word string) (net.IP, error) {
-	p := make(net.IP, net.IPv6len)
-	for i := 0; i < 4; i++ {
-		part, err := strconv.ParseInt(word[i*8:(i+1)*8], 16, 32)
-		if err != nil {
-			return nil, err
-		}
-		p[i*4] = byte(part)
-		p[i*4+1] = byte(part >> 8)
-		p[i*4+2] = byte(part >> 16)
-		p[i*4+3] = byte(part >> 24)
-	}
-	return p, nil
-}
-
-func hex_to_ip(word string, ipv6 bool) (net.IP, error) {
-	if ipv6 {
-		return hex_to_ipv6(word)
-	} else {
-		return hex_to_ipv4(word)
-	}
-}
-
-func hex_to_ip_port(str []byte, ipv6 bool) (net.IP, uint16, error) {
-	words := bytes.Split(str, []byte(":"))
-	if len(words) < 2 {
-		return nil, 0, errors.New("Didn't find ':' as a separator")
-	}
-
-	ip, err := hex_to_ip(string(words[0]), ipv6)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	port, err := strconv.ParseInt(string(words[1]), 16, 32)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return ip, uint16(port), nil
-}
-
-func (proc *ProcessesWatcher) UpdateMap() {
-
-	logp.Debug("procs", "UpdateMap()")
-	ipv4socks, err := sockets_From_Proc("/proc/net/tcp", false)
-	if err != nil {
-		logp.Err("Parse_Proc_Net_Tcp: %s", err)
+func lookupMapping(address net.IP, port uint16, procMap map[endpoint]portProcMapping) (p portProcMapping, found bool) {
+	// Precedence when one socket is bound to a specific IP:port and another one
+	// to INADDR_ANY and same port is not clear. Seems that the last one to bind
+	// takes precedence, and we don't have a way to tell.
+	// This function takes the naive approach of giving precedence to the more
+	// specific address and then to INADDR_ANY.
+	if p, found = procMap[endpoint{address.String(), port}]; found {
 		return
 	}
-	ipv6socks, err := sockets_From_Proc("/proc/net/tcp6", true)
+
+	nullAddr := anyIPv4
+	if asIPv4 := address.To4(); asIPv4 == nil {
+		nullAddr = anyIPv6
+	}
+	p, found = procMap[endpoint{nullAddr, port}]
+	return
+}
+
+func (proc *ProcessesWatcher) updateMap(transport applayer.Transport) {
+	if logp.HasSelector("procsdetailed") {
+		start := time.Now()
+		defer func() {
+			logp.Debug("procsdetailed", "updateMap() took %v", time.Now().Sub(start))
+		}()
+	}
+
+	endpoints, err := proc.impl.GetLocalPortToPIDMapping(transport)
 	if err != nil {
-		logp.Err("Parse_Proc_Net_Tcp ipv6: %s", err)
+		logp.Err("unable to list local ports: %v", err)
+	}
+
+	proc.expireProcessCache()
+
+	for e, pid := range endpoints {
+		proc.updateMappingEntry(transport, e, pid)
+	}
+}
+
+func (proc *ProcessesWatcher) updateMappingEntry(transport applayer.Transport, e endpoint, pid int) {
+	prev, ok := proc.portProcMap[transport][e]
+	if ok && prev.pid == pid {
+		// This port->pid mapping already exists
 		return
 	}
-	socks_map := map[int64]*SocketInfo{}
-	for _, s := range ipv4socks {
-		socks_map[s.Inode] = s
+
+	p := proc.getProcessInfo(pid)
+	if p == nil {
+		return
 	}
-	for _, s := range ipv6socks {
-		socks_map[s.Inode] = s
-	}
-
-	for _, p := range proc.Processes {
-		for _, pid := range p.Pids {
-			inodes, err := FindSocketsOfPid(proc.proc_prefix, pid)
-			if err != nil {
-				logp.Err("FindSocketsOfPid: %s", err)
-				continue
-			}
-
-			for _, inode := range inodes {
-				sockInfo, exists := socks_map[inode]
-				if exists {
-					proc.UpdateMappingEntry(sockInfo.Src_port, pid, p)
-				}
-			}
-
-		}
-	}
-
-}
-
-func sockets_From_Proc(filename string, ipv6 bool) ([]*SocketInfo, error) {
-	file, err := os.Open("/proc/net/tcp")
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	return Parse_Proc_Net_Tcp(file, false)
-}
-
-// Parses the /proc/net/tcp file
-func Parse_Proc_Net_Tcp(input io.Reader, ipv6 bool) ([]*SocketInfo, error) {
-	buf := bufio.NewReader(input)
-
-	sockets := []*SocketInfo{}
-	var err error = nil
-	var line []byte
-	for err != io.EOF {
-		line, err = buf.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			logp.Err("Error reading /proc/net/tcp: %s", err)
-			return nil, err
-		}
-		words := bytes.Fields(line)
-		if len(words) < 10 || bytes.Equal(words[0], []byte("sl")) {
-			logp.Debug("procs", "Less then 10 words (%d) or starting with 'sl': %s", len(words), words)
-			continue
-		}
-
-		var sock SocketInfo
-		var err_ error
-
-		sock.Src_ip, sock.Src_port, err_ = hex_to_ip_port(words[1], ipv6)
-		if err_ != nil {
-			logp.Debug("procs", "Error parsing IP and port: %s", err_)
-			continue
-		}
-
-		sock.Dst_ip, sock.Dst_port, err_ = hex_to_ip_port(words[2], ipv6)
-		if err_ != nil {
-			logp.Debug("procs", "Error parsing IP and port: %s", err_)
-			continue
-		}
-
-		uid, _ := strconv.Atoi(string(words[7]))
-		sock.Uid = uint16(uid)
-		inode, _ := strconv.Atoi(string(words[9]))
-		sock.Inode = int64(inode)
-
-		sockets = append(sockets, &sock)
-	}
-	return sockets, nil
-}
-
-func (proc *ProcessesWatcher) UpdateMappingEntry(port uint16, pid int, p *Process) {
-	entry := PortProcMapping{Port: port, Pid: pid, Proc: p}
 
 	// Simply overwrite old entries for now.
 	// We never expire entries from this map. Since there are 65k possible
 	// ports, the size of the dict can be max 1.5 MB, which we consider
 	// reasonable.
-	proc.PortProcMap[port] = entry
+	proc.portProcMap[transport][e] = portProcMapping{endpoint: e, pid: pid, proc: p}
 
-	logp.Debug("procsdetailed", "UpdateMappingEntry(): port=%d pid=%d", port, p.Name)
+	if logp.IsDebug("procsdetailed") {
+		logp.Debug("procsdetailed", "updateMappingEntry(): local=%s:%d/%s pid=%d process='%s'",
+			e.address, e.port, transport, pid, p.name)
+	}
 }
 
-func FindSocketsOfPid(prefix string, pid int) (inodes []int64, err error) {
-
-	dirname := filepath.Join(prefix, "/proc", strconv.Itoa(pid), "fd")
-	procfs, err := os.Open(dirname)
-	if err != nil {
-		return []int64{}, fmt.Errorf("Open: %s", err)
-	}
-	defer procfs.Close()
-	names, err := procfs.Readdirnames(0)
-	if err != nil {
-		return []int64{}, fmt.Errorf("Readdirnames: %s", err)
-	}
-
-	for _, name := range names {
-		link, err := os.Readlink(filepath.Join(dirname, name))
-		if err != nil {
-			logp.Debug("procs", "Readlink %s: %s", name, err)
-			continue
-		}
-
-		if strings.HasPrefix(link, "socket:[") {
-			inode, err := strconv.ParseInt(link[8:len(link)-1], 10, 64)
-			if err != nil {
-				logp.Debug("procs", "ParseInt: %s:", err)
-				continue
-			}
-
-			inodes = append(inodes, int64(inode))
-		}
-	}
-
-	return inodes, nil
-}
-
-func (proc *ProcessesWatcher) IsLocalIp(ip net.IP) bool {
-
+func (proc *ProcessesWatcher) isLocalIP(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return true
 	}
 
-	for _, addr := range proc.LocalAddrs {
+	for _, addr := range proc.localAddrs {
 		if ip.Equal(addr) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func (proc *ProcessesWatcher) getProcessInfo(pid int) *process {
+	if p, ok := proc.processCache[pid]; ok {
+		return p
+	}
+	// Not in cache, resolve process info
+	p := proc.impl.GetProcess(pid)
+	if p == nil {
+		return nil
+	}
+
+	// The packetbeat.procs.monitored*.cmdline_grep allows you to overwrite
+	// the process name with an alias.
+	for _, match := range proc.procConfig {
+		if strings.Contains(strings.Join(p.args, " "), match.CmdlineGrep) {
+			p.name = match.Process
+			break
+		}
+	}
+	proc.processCache[pid] = p
+	return p
+}
+
+func (proc *ProcessesWatcher) expireProcessCache() {
+	now := time.Now()
+	for pid, info := range proc.processCache {
+		if now.After(info.expiration) {
+			delete(proc.processCache, pid)
+		}
+	}
+}
+
+// GetProcess returns the process metadata.
+func (proc *ProcessesWatcher) GetProcess(pid int) *process {
+	if pid <= 0 {
+		return nil
+	}
+
+	p, err := sysinfo.Process(pid)
+	if err != nil {
+		logp.Err("Unable to get command-line for PID %d: %v", pid, err)
+		return nil
+	}
+
+	info, err := p.Info()
+	if err != nil {
+		logp.Err("Unable to get command-line for PID %d: %v", pid, err)
+		return nil
+	}
+
+	name := info.Name
+	if len(info.Args) > 0 {
+		// Workaround the 20 char limit on comm values on Linux.
+		name = filepath.Base(info.Args[0])
+	}
+	return &process{
+		pid:        info.PID,
+		ppid:       info.PPID,
+		name:       name,
+		exe:        info.Exe,
+		cwd:        info.CWD,
+		args:       info.Args,
+		startTime:  info.StartTime,
+		expiration: time.Now().Add(processCacheExpiration),
+	}
+}
+
+// GetLocalIPs returns the list of local addresses.
+func (proc *ProcessesWatcher) GetLocalIPs() ([]net.IP, error) {
+	return common.LocalIPAddrs()
 }

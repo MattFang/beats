@@ -1,12 +1,34 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package common
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/elastic/beats/libbeat/logp"
 )
 
 func TestMapStrUpdate(t *testing.T) {
@@ -24,6 +46,58 @@ func TestMapStrUpdate(t *testing.T) {
 	a.Update(b)
 
 	assert.Equal(a, MapStr{"a": 1, "b": 3, "c": 4})
+}
+
+func TestMapStrDeepUpdate(t *testing.T) {
+	tests := []struct {
+		a, b, expected MapStr
+	}{
+		{
+			MapStr{"a": 1},
+			MapStr{"b": 2},
+			MapStr{"a": 1, "b": 2},
+		},
+		{
+			MapStr{"a": 1},
+			MapStr{"a": 2},
+			MapStr{"a": 2},
+		},
+		{
+			MapStr{"a": 1},
+			MapStr{"a": MapStr{"b": 1}},
+			MapStr{"a": MapStr{"b": 1}},
+		},
+		{
+			MapStr{"a": MapStr{"b": 1}},
+			MapStr{"a": MapStr{"c": 2}},
+			MapStr{"a": MapStr{"b": 1, "c": 2}},
+		},
+		{
+			MapStr{"a": MapStr{"b": 1}},
+			MapStr{"a": 1},
+			MapStr{"a": 1},
+		},
+		{
+			MapStr{"a.b": 1},
+			MapStr{"a": 1},
+			MapStr{"a": 1, "a.b": 1},
+		},
+		{
+			MapStr{"a": 1},
+			MapStr{"a.b": 1},
+			MapStr{"a": 1, "a.b": 1},
+		},
+	}
+
+	for i, test := range tests {
+		a, b, expected := test.a, test.b, test.expected
+		name := fmt.Sprintf("%v: %v + %v = %v", i, a, b, expected)
+
+		t.Run(name, func(t *testing.T) {
+			a.DeepUpdate(b)
+			assert.Equal(t, expected, a)
+		})
+	}
 }
 
 func TestMapStrUnion(t *testing.T) {
@@ -64,7 +138,7 @@ func TestMapStrCopyFieldsTo(t *testing.T) {
 	c := MapStr{}
 
 	err := m.CopyFieldsTo(c, "dd")
-	assert.Equal(nil, err)
+	assert.Error(err)
 	assert.Equal(MapStr{}, c)
 
 	err = m.CopyFieldsTo(c, "a")
@@ -126,7 +200,9 @@ func TestHasKey(t *testing.T) {
 				"c31": 1,
 				"c32": 2,
 			},
+			"c4.f": 19,
 		},
+		"d.f": 1,
 	}
 
 	hasKey, err := m.HasKey("c.c2")
@@ -145,6 +221,116 @@ func TestHasKey(t *testing.T) {
 	assert.Equal(nil, err)
 	assert.Equal(false, hasKey)
 
+	hasKey, err = m.HasKey("d.f")
+	assert.Equal(nil, err)
+	assert.Equal(true, hasKey)
+
+	hasKey, err = m.HasKey("c.c4.f")
+	assert.Equal(nil, err)
+	assert.Equal(true, hasKey)
+}
+
+func TestMapStrPut(t *testing.T) {
+	m := MapStr{
+		"subMap": MapStr{
+			"a": 1,
+		},
+	}
+
+	// Add new value to the top-level.
+	v, err := m.Put("a", "ok")
+	assert.NoError(t, err)
+	assert.Nil(t, v)
+	assert.Equal(t, MapStr{"a": "ok", "subMap": MapStr{"a": 1}}, m)
+
+	// Add new value to subMap.
+	v, err = m.Put("subMap.b", 2)
+	assert.NoError(t, err)
+	assert.Nil(t, v)
+	assert.Equal(t, MapStr{"a": "ok", "subMap": MapStr{"a": 1, "b": 2}}, m)
+
+	// Overwrite a value in subMap.
+	v, err = m.Put("subMap.a", 2)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, v)
+	assert.Equal(t, MapStr{"a": "ok", "subMap": MapStr{"a": 2, "b": 2}}, m)
+
+	// Add value to map that does not exist.
+	m = MapStr{}
+	v, err = m.Put("subMap.newMap.a", 1)
+	assert.NoError(t, err)
+	assert.Nil(t, v)
+	assert.Equal(t, MapStr{"subMap": MapStr{"newMap": MapStr{"a": 1}}}, m)
+}
+
+func TestMapStrGetValue(t *testing.T) {
+
+	tests := []struct {
+		input  MapStr
+		key    string
+		output interface{}
+		error  bool
+	}{
+		{
+			MapStr{"a": 1},
+			"a",
+			1,
+			false,
+		},
+		{
+			MapStr{"a": MapStr{"b": 1}},
+			"a",
+			MapStr{"b": 1},
+			false,
+		},
+		{
+			MapStr{"a": MapStr{"b": 1}},
+			"a.b",
+			1,
+			false,
+		},
+		{
+			MapStr{"a": MapStr{"b.c": 1}},
+			"a",
+			MapStr{"b.c": 1},
+			false,
+		},
+		{
+			MapStr{"a": MapStr{"b.c": 1}},
+			"a.b",
+			nil,
+			true,
+		},
+		{
+			MapStr{"a.b": MapStr{"c": 1}},
+			"a.b",
+			MapStr{"c": 1},
+			false,
+		},
+		{
+			MapStr{"a.b": MapStr{"c": 1}},
+			"a.b.c",
+			nil,
+			true,
+		},
+		{
+			MapStr{"a": MapStr{"b.c": 1}},
+			"a.b.c",
+			1,
+			false,
+		},
+	}
+
+	for _, test := range tests {
+		v, err := test.input.GetValue(test.key)
+		if test.error {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+		}
+		assert.Equal(t, test.output, v)
+
+	}
 }
 
 func TestClone(t *testing.T) {
@@ -161,127 +347,6 @@ func TestClone(t *testing.T) {
 
 	c := m.Clone()
 	assert.Equal(MapStr{"c31": 1, "c32": 2}, c["c3"])
-}
-
-func TestEnsureTimestampField(t *testing.T) {
-
-	type io struct {
-		Input  MapStr
-		Output MapStr
-	}
-
-	tests := []io{
-		// should add a @timestamp field if it doesn't exists.
-		{
-			Input: MapStr{},
-			Output: MapStr{
-				"@timestamp": MustParseTime("2015-03-01T12:34:56.123Z"),
-			},
-		},
-		// should convert from string to Time
-		{
-			Input: MapStr{"@timestamp": "2015-03-01T12:34:57.123Z"},
-			Output: MapStr{
-				"@timestamp": MustParseTime("2015-03-01T12:34:57.123Z"),
-			},
-		},
-		// should convert from time.Time to Time
-		{
-			Input: MapStr{
-				"@timestamp": time.Date(2015, time.March, 01,
-					12, 34, 57, 123*1e6, time.UTC),
-			},
-			Output: MapStr{
-				"@timestamp": MustParseTime("2015-03-01T12:34:57.123Z"),
-			},
-		},
-		// should leave a Time alone
-		{
-			Input: MapStr{
-				"@timestamp": MustParseTime("2015-03-01T12:34:57.123Z"),
-			},
-			Output: MapStr{
-				"@timestamp": MustParseTime("2015-03-01T12:34:57.123Z"),
-			},
-		},
-	}
-
-	now := func() time.Time {
-		return time.Date(2015, time.March, 01, 12, 34, 56, 123*1e6, time.UTC)
-	}
-
-	for _, test := range tests {
-		m := test.Input
-		err := m.EnsureTimestampField(now)
-		assert.Nil(t, err)
-		assert.Equal(t, test.Output, m)
-	}
-}
-
-func TestEnsureTimestampFieldNegative(t *testing.T) {
-
-	inputs := []MapStr{
-		// should error on invalid string layout (microseconds)
-		{
-			"@timestamp": "2015-03-01T12:34:57.123456Z",
-		},
-		// should error when the @timestamp is an integer
-		{
-			"@timestamp": 123456678,
-		},
-	}
-
-	now := func() time.Time {
-		return time.Date(2015, time.March, 01, 12, 34, 56, 123*1e6, time.UTC)
-	}
-
-	for _, input := range inputs {
-		m := input
-		err := m.EnsureTimestampField(now)
-		assert.NotNil(t, err)
-	}
-}
-
-func TestEnsureCountFiled(t *testing.T) {
-	type io struct {
-		Input  MapStr
-		Output MapStr
-	}
-	tests := []io{
-		// should add a count field if there is none
-		{
-			Input: MapStr{
-				"a": "b",
-			},
-			Output: MapStr{
-				"a":     "b",
-				"count": 1,
-			},
-		},
-
-		// should do nothing if there is already a count
-		{
-			Input: MapStr{
-				"count": 1,
-			},
-			Output: MapStr{
-				"count": 1,
-			},
-		},
-
-		// should add count on an empty dict
-		{
-			Input:  MapStr{},
-			Output: MapStr{"count": 1},
-		},
-	}
-
-	for _, test := range tests {
-		m := test.Input
-		err := m.EnsureCountField()
-		assert.Nil(t, err)
-		assert.Equal(t, test.Output, m)
-	}
 }
 
 func TestString(t *testing.T) {
@@ -323,7 +388,7 @@ func TestMergeFields(t *testing.T) {
 		Event     MapStr
 		Fields    MapStr
 		Output    MapStr
-		Err       error
+		Err       string
 	}
 	tests := []io{
 		// underRoot = true, merges
@@ -406,14 +471,18 @@ func TestMergeFields(t *testing.T) {
 			Output: MapStr{
 				"fields": "not a MapStr",
 			},
-			Err: ErrorFieldsIsNotMapStr,
+			Err: "expected map",
 		},
 	}
 
 	for _, test := range tests {
 		err := MergeFields(test.Event, test.Fields, test.UnderRoot)
-		assert.Equal(t, test.Err, err)
 		assert.Equal(t, test.Output, test.Event)
+		if test.Err != "" {
+			assert.Contains(t, err.Error(), test.Err)
+		} else {
+			assert.NoError(t, err)
+		}
 	}
 }
 
@@ -422,7 +491,7 @@ func TestAddTag(t *testing.T) {
 		Event  MapStr
 		Tags   []string
 		Output MapStr
-		Err    error
+		Err    string
 	}
 	tests := []io{
 		// No existing tags, creates new tag array
@@ -433,7 +502,7 @@ func TestAddTag(t *testing.T) {
 				"tags": []string{"json"},
 			},
 		},
-		// Existing tags, appends
+		// Existing tags is a []string, appends
 		{
 			Event: MapStr{
 				"tags": []string{"json"},
@@ -443,7 +512,17 @@ func TestAddTag(t *testing.T) {
 				"tags": []string{"json", "docker"},
 			},
 		},
-		// Existing tags is not a []string
+		// Existing tags is a []interface{}, appends
+		{
+			Event: MapStr{
+				"tags": []interface{}{"json"},
+			},
+			Tags: []string{"docker"},
+			Output: MapStr{
+				"tags": []interface{}{"json", "docker"},
+			},
+		},
+		// Existing tags is not a []string or []interface{}
 		{
 			Event: MapStr{
 				"tags": "not a slice",
@@ -452,13 +531,296 @@ func TestAddTag(t *testing.T) {
 			Output: MapStr{
 				"tags": "not a slice",
 			},
-			Err: ErrorTagsIsNotStringArray,
+			Err: "expected string array",
 		},
 	}
 
 	for _, test := range tests {
 		err := AddTags(test.Event, test.Tags)
-		assert.Equal(t, test.Err, err)
 		assert.Equal(t, test.Output, test.Event)
+		if test.Err != "" {
+			assert.Contains(t, err.Error(), test.Err)
+		} else {
+			assert.NoError(t, err)
+		}
 	}
+}
+
+func TestAddTagsWithKey(t *testing.T) {
+	type io struct {
+		Event  MapStr
+		Key    string
+		Tags   []string
+		Output MapStr
+		Err    string
+	}
+	tests := []io{
+		// No existing tags, creates new tag array
+		{
+			Event: MapStr{},
+			Key:   "tags",
+			Tags:  []string{"json"},
+			Output: MapStr{
+				"tags": []string{"json"},
+			},
+		},
+		// Existing tags is a []string, appends
+		{
+			Event: MapStr{
+				"tags": []string{"json"},
+			},
+			Key:  "tags",
+			Tags: []string{"docker"},
+			Output: MapStr{
+				"tags": []string{"json", "docker"},
+			},
+		},
+		// Existing tags are in submap and is a []interface{}, appends
+		{
+			Event: MapStr{
+				"log": MapStr{
+					"flags": []interface{}{"json"},
+				},
+			},
+			Key:  "log.flags",
+			Tags: []string{"docker"},
+			Output: MapStr{
+				"log": MapStr{
+					"flags": []interface{}{"json", "docker"},
+				},
+			},
+		},
+		// Existing tags are in a submap and is not a []string or []interface{}
+		{
+			Event: MapStr{
+				"log": MapStr{
+					"flags": "not a slice",
+				},
+			},
+			Key:  "log.flags",
+			Tags: []string{"docker"},
+			Output: MapStr{
+				"log": MapStr{
+					"flags": "not a slice",
+				},
+			},
+			Err: "expected string array",
+		},
+	}
+
+	for _, test := range tests {
+		err := AddTagsWithKey(test.Event, test.Key, test.Tags)
+		assert.Equal(t, test.Output, test.Event)
+		if test.Err != "" {
+			assert.Contains(t, err.Error(), test.Err)
+		} else {
+			assert.NoError(t, err)
+		}
+	}
+}
+
+func TestFlatten(t *testing.T) {
+	type data struct {
+		Event    MapStr
+		Expected MapStr
+	}
+	tests := []data{
+		{
+			Event: MapStr{
+				"hello": MapStr{
+					"world": 15,
+				},
+			},
+			Expected: MapStr{
+				"hello.world": 15,
+			},
+		},
+		{
+			Event: MapStr{
+				"test": 15,
+			},
+			Expected: MapStr{
+				"test": 15,
+			},
+		},
+		{
+			Event: MapStr{
+				"test": 15,
+				"hello": MapStr{
+					"world": MapStr{
+						"ok": "test",
+					},
+				},
+				"elastic": MapStr{
+					"for": "search",
+				},
+			},
+			Expected: MapStr{
+				"test":           15,
+				"hello.world.ok": "test",
+				"elastic.for":    "search",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		assert.Equal(t, test.Expected, test.Event.Flatten())
+	}
+}
+
+func BenchmarkMapStrFlatten(b *testing.B) {
+	m := MapStr{
+		"test": 15,
+		"hello": MapStr{
+			"world": MapStr{
+				"ok": "test",
+			},
+		},
+		"elastic": MapStr{
+			"for": "search",
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.Flatten()
+	}
+}
+
+// Ensure the MapStr is marshaled in logs the same way it is by json.Marshal.
+func TestMapStrJSONLog(t *testing.T) {
+	logp.DevelopmentSetup(logp.ToObserverOutput())
+
+	m := MapStr{
+		"test": 15,
+		"hello": MapStr{
+			"world": MapStr{
+				"ok": "test",
+			},
+		},
+		"elastic": MapStr{
+			"for": "search",
+		},
+	}
+
+	data, err := json.Marshal(MapStr{"m": m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedJSON := string(data)
+
+	logp.NewLogger("test").Infow("msg", "m", m)
+	logs := logp.ObserverLogs().TakeAll()
+	if assert.Len(t, logs, 1) {
+		log := logs[0]
+
+		// Encode like zap does.
+		e := zapcore.NewJSONEncoder(zapcore.EncoderConfig{})
+		buf, err := e.EncodeEntry(log.Entry, log.Context)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Zap adds a newline to end the JSON object.
+		actualJSON := strings.TrimSpace(buf.String())
+
+		assert.Equal(t, string(expectedJSON), actualJSON)
+	}
+}
+
+func BenchmarkMapStrLogging(b *testing.B) {
+	logp.DevelopmentSetup(logp.ToDiscardOutput())
+	logger := logp.NewLogger("benchtest")
+
+	m := MapStr{
+		"test": 15,
+		"hello": MapStr{
+			"world": MapStr{
+				"ok": "test",
+			},
+		},
+		"elastic": MapStr{
+			"for": "search",
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		logger.Infow("test", "mapstr", m)
+	}
+}
+
+func BenchmarkWalkMap(b *testing.B) {
+
+	globalM := MapStr{
+		"hello": MapStr{
+			"world": MapStr{
+				"ok": "test",
+			},
+		},
+	}
+
+	b.Run("Get", func(b *testing.B) {
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			globalM.GetValue("test.world.ok")
+		}
+	})
+
+	b.Run("Put", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			m := MapStr{
+				"hello": MapStr{
+					"world": MapStr{
+						"ok": "test",
+					},
+				},
+			}
+
+			m.Put("hello.world.new", 17)
+		}
+	})
+
+	b.Run("PutMissing", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			m := MapStr{}
+
+			m.Put("a.b.c", 17)
+		}
+	})
+
+	b.Run("HasKey", func(b *testing.B) {
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			globalM.HasKey("hello.world.ok")
+			globalM.HasKey("hello.world.no_ok")
+		}
+	})
+
+	b.Run("HasKeyFirst", func(b *testing.B) {
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			globalM.HasKey("hello")
+		}
+	})
+
+	b.Run("Delete", func(b *testing.B) {
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			m := MapStr{
+				"hello": MapStr{
+					"world": MapStr{
+						"ok": "test",
+					},
+				},
+			}
+			m.Put("hello.world.test", 17)
+		}
+	})
 }

@@ -1,18 +1,16 @@
-BEATNAME=winlogbeat
-BEAT_DESCRIPTION=Ships Windows event logs to Elasticsearch or Logstash.
+BEAT_NAME=winlogbeat
+BEAT_TITLE=Winlogbeat
 SYSTEM_TESTS=true
 TEST_ENVIRONMENT=false
-
 GOX_OS=windows
-TARGETS="windows/amd64 windows/386"
-PACKAGES=winlogbeat/win
+EXCLUDE_COMMON_UPDATE_TARGET=true
 
 include ../libbeat/scripts/Makefile
+
+.PHONY: update
+update: mage
+	mage update
 
 .PHONY: gen
 gen:
 	GOOS=windows GOARCH=386 go generate -v -x ./...
-
-# This is called by the beats packer before building starts
-.PHONY: before-build
-before-build:

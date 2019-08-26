@@ -1,113 +1,212 @@
-[[load-kibana-dashboards]]
-=== Importing the Beats Dashboards
+//////////////////////////////////////////////////////////////////////////
+//// This content is shared by all Elastic Beats. Make sure you keep the
+//// descriptions here generic enough to work for all Beats that include
+//// this file. When using cross references, make sure that the cross
+//// references resolve correctly for any files that include this one.
+//// Use the appropriate variables defined in the index.asciidoc file to
+//// resolve Beat names: beatname_uc and beatname_lc.
+//// Use the following include to pull this content into a doc file:
+//// include::../../libbeat/docs/dashboards.asciidoc[]
+//////////////////////////////////////////////////////////////////////////
 
-Kibana has a large set of visualization types that you can combine to create
-the perfect dashboards for your needs. But this flexibility can be a bit
-overwhelming at the beginning, so we have created some sample dashboards to get you
-started and to demonstrate what is possible based on the Beats data.
+ifdef::has_solutions[]
+TIP: For deeper observability into your infrastructure, use the
+{infra-guide}/infrastructure-ui-overview.html[Infrastructure] and
+{infra-guide}/logs-ui-overview.html[Logs] UIs in {kib}. For setup details, see
+the {infra-guide}/index.html[Infrastructure Monitoring Guide].
+endif::has_solutions[]
 
-Each Beat comes packaged with the `scripts/import_dashboards` script that you can use to import the example dashboards,
-visualizations, and searches for that Beat. The script also creates index patterns, such as 
-`packetbeat-*` for Packetbeat, `metricbeat-*` for Metricbeat, and so on. 
+{beatname_uc} comes packaged with example Kibana dashboards, visualizations,
+and searches for visualizing {beatname_uc} data in Kibana. Before you can use
+the dashboards, you need to create the index pattern, +{beat_default_index_prefix}-*+, and
+load the dashboards into Kibana. To do this, you can either run the `setup`
+command (as described here) or
+<<configuration-dashboards,configure dashboard loading>> in the
++{beatname_lc}.yml+ config file.
 
+This requires a Kibana endpoint configuration. If you didn't already configure
+a Kibana endpoint, see <<{beatname_lc}-configuration,configure {beatname_uc}>>. 
 
-The command line options of the script, together with more examples, are available under the
-<<import-dashboards,import_dashboards>> section.
+Make sure Kibana is running before you perform this step. If you are accessing a
+secured Kibana instance, make sure you've configured credentials as described in
+<<{beatname_lc}-configuration>>.
 
-Use the following command to import the Kibana dashboards for any of the Elastic Beats:
+To set up the Kibana dashboards for {beatname_uc}, use the appropriate command
+for your system. The command shown here loads the dashboards from the {beatname_uc}
+package. For more options, such as loading customized dashboards, see
+{beatsdevguide}/import-dashboards.html[Importing Existing Beat Dashboards] in
+the _Beats Developer Guide_.
+ifndef::only-elasticsearch[]
+If you've configured the Logstash output, see
+<<load-dashboards-logstash>>.
+endif::only-elasticsearch[]
 
-*deb, rpm, and mac:*
+ifdef::requires-sudo[]
+include::../../libbeat/docs/shared-note-sudo.asciidoc[]
+endif::requires-sudo[]
 
-From the directory where you installed the Beat, run the `import_dashboards` script. 
+ifdef::deb_os,rpm_os[]
+*deb and rpm:*
 
-["source","sh",subs="attributes,callouts"]
+["source","sh",subs="attributes"]
 ----------------------------------------------------------------------
-$ ./scripts/import_dashboards
+{beatname_lc} setup --dashboards
+----------------------------------------------------------------------
+endif::deb_os,rpm_os[]
+
+ifdef::mac_os[]
+*mac:*
+
+["source","sh",subs="attributes"]
+----------------------------------------------------------------------
+./{beatname_lc} setup --dashboards
 ----------------------------------------------------------------------
 
-On deb and rpm, the `scripts` folder is located under the home path, which is `/usr/share/{beat_name}/` unless you change it.
+*brew:*
 
-By default, the script assumes that you are running Elasticsearch on `127.0.0.1:9200`. Use the `-es` option
-to specify a different location. For example: 
-
-["source","sh",subs="attributes,callouts"]
+["source","sh",subs="attributes"]
 ----------------------------------------------------------------------
-$ ./scripts/import_dashboards -es http://192.168.33.60:9200 
+{beatname_lc} setup --dashboards
 ----------------------------------------------------------------------
+endif::mac_os[]
 
-The username and password to use for Elasticsearch authentication. There are a few ways to pass in the username and password. For example:
+ifdef::linux_os[]
+*linux:*
 
-["source","sh",subs="attributes,callouts"]
------------------------------------------------------------------------
-$ ./scripts/import_dashboards -es https://xyz.found.io -user user -pass password <1>
-$ ./scripts/import_dashboards -es https://xyz.found.io -user admin -pass $(cat ~/pass-file) <2> 
------------------------------------------------------------------------
+["source","sh",subs="attributes"]
+----------------------------------------------------------------------
+./{beatname_lc} setup --dashboards
+----------------------------------------------------------------------
+endif::linux_os[]
 
-<1> Specify the username and password as options.
-<2> Use a file to avoid polluting the bash history with the password.
+ifdef::docker_platform[]
+*docker:*
 
+["source","sh",subs="attributes"]
+----------------------------------------------------------------------
+docker run --net="host" {dockerimage} setup --dashboards
+----------------------------------------------------------------------
+endif::docker_platform[]
 
+ifdef::win_os[]
+ifndef::win_only[]
 *win:*
+endif::win_only[]
 
 Open a PowerShell prompt as an Administrator (right-click the PowerShell icon
-and select *Run As Administrator*). If you are running Windows XP, you may need
-to download and install PowerShell. 
+and select *Run As Administrator*).
 
-From the directory where you installed the Beat, run the `import_dashboards` script:
-+
-["source","sh",subs="attributes,callouts"]
+From the PowerShell prompt, change to the directory where you installed {beatname_uc},
+and run:
+
+["source","sh",subs="attributes"]
 ----------------------------------------------------------------------
-PS > scripts\import_dashboards
+PS > .{backslash}{beatname_lc}.exe setup --dashboards
 ----------------------------------------------------------------------
+endif::win_os[]
 
-By default, the script assumes that you are running Elasticsearch on `127.0.0.1:9200`. Use the `-es` option to specify a different location. For example: 
+ifndef::only-elasticsearch[]
+[[load-dashboards-logstash]]
+==== Set up dashboards for Logstash output
 
+During dashboard loading, {beatname_uc} connects to Elasticsearch to check
+version information. To load dashboards when the Logstash output is enabled, you
+need to temporarily disable the Logstash output and enable Elasticsearch. To
+connect to a secured Elasticsearch cluster, you also need to pass Elasticsearch
+credentials.
 
-["source","sh",subs="attributes,callouts"]
-----------------------------------------------------------------------
-PS > scripts\import_dashboards -es http://192.168.33.60:9200
-----------------------------------------------------------------------
+TIP: The example shows a hard-coded password, but you should store sensitive
+values in the <<keystore,secrets keystore>>.
 
-NOTE: If script execution is disabled on your system, you need to set the execution policy for the current session to
-allow the script to run. For example: `PowerShell.exe -ExecutionPolicy UnRestricted -File scripts\import_dashboards -es http://192.168.33.60:9200`.
+ifdef::deb_os,rpm_os[]
+*deb and rpm:*
 
+["source","sh",subs="attributes"]
+----
+{beatname_lc} setup -e \
+  -E output.logstash.enabled=false \
+  -E output.elasticsearch.hosts=['localhost:9200'] \
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal \
+  -E output.elasticsearch.password={pwd} \
+  -E setup.kibana.host=localhost:5601
+----
+endif::deb_os,rpm_os[]
 
-The username and password to use for authentication:
+ifdef::mac_os[]
+*mac:*
 
-["source","sh",subs="attributes,callouts"]
------------------------------------------------------------------------
-PS > scripts\import_dashboards -es https://xyz.found.io -user user -pass password
------------------------------------------------------------------------
+["source","sh",subs="attributes"]
+----
+./{beatname_lc} setup -e \
+  -E output.logstash.enabled=false \
+  -E output.elasticsearch.hosts=['localhost:9200'] \
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal \
+  -E output.elasticsearch.password={pwd} \
+  -E setup.kibana.host=localhost:5601 
+----
 
+*brew:*
 
-Please see <<import-dashboards,import Kibana dashboards>> for more details about the `import_dashboards` script.
+["source","sh",subs="attributes"]
+----
+{beatname_lc} setup -e \
+  -E output.logstash.enabled=false \
+  -E output.elasticsearch.hosts=['localhost:9200'] \
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal \
+  -E output.elasticsearch.password={pwd} \
+  -E setup.kibana.host=localhost:5601 
+----
+endif::mac_os[]
 
-[[view-kibana-dashboards]]
-=== Opening the Beats Dashboards in Kibana
+ifdef::linux_os[]
+*linux:*
 
-After <<load-kibana-dashboards,importing the Beats dashboards>>,
-launch the Kibana web interface by pointing your browser
-to port 5601. For example, http://127.0.0.1:5601[http://127.0.0.1:5601].
+["source","sh",subs="attributes"]
+----
+./{beatname_lc} setup -e \
+  -E output.logstash.enabled=false \
+  -E output.elasticsearch.hosts=['localhost:9200'] \
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal \
+  -E output.elasticsearch.password={pwd} \
+  -E setup.kibana.host=localhost:5601 
+----
+endif::linux_os[]
 
-If Kibana shows a `No default index pattern` warning, you must select or create
-an index pattern to continue. To resolve the issue, select one of the
-predefined index patterns and set it as the default.
+ifdef::docker_platform[]
+*docker:*
 
-[NOTE]
-.Known Issue in 5.0.0-alpha4
-====
-There is a known issue in the 5.0.0-alpha4 release of Kibana that affects
-the loading process of our sample dashboards. It only affects brand new
-installations of Kibana 5.0.0-alpha4 that don’t yet have any indices defined. 
-To resolve this error, see the "Known issue and workaround" section
-https://www.elastic.co/blog/beats-5-0-0-alpha4-released[here].
+["source","sh",subs="attributes"]
+----
+docker run --net="host" {dockerimage} setup -e \
+  -E output.logstash.enabled=false \
+  -E output.elasticsearch.hosts=['localhost:9200'] \
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal \
+  -E output.elasticsearch.password={pwd} \
+  -E setup.kibana.host=localhost:5601
+----
+endif::docker_platform[]
 
-This issue is resolved in 5.0.0-alpha5.
-====
+ifdef::win_os[]
+ifndef::win_only[]
+*win:*
+endif::win_only[]
 
-image:./images/kibana-created-indexes.png[Kibana configured indexes]
+Open a PowerShell prompt as an Administrator (right-click the PowerShell icon
+and select *Run As Administrator*).
 
-To open the loaded dashboards, go to the *Dashboard* page and click *Open*.
-Select the dashboard that you want to open. 
+From the PowerShell prompt, change to the directory where you installed {beatname_uc},
+and run:
 
-image:./images/kibana-navigation-vis.png[Navigation widget in Kibana]
+["source","sh",subs="attributes"]
+----
+PS > .{backslash}{beatname_lc}.exe setup -e `
+  -E output.logstash.enabled=false `
+  -E output.elasticsearch.hosts=['localhost:9200'] `
+  -E output.elasticsearch.username={beat_default_index_prefix}_internal `
+  -E output.elasticsearch.password={pwd} `
+  -E setup.kibana.host=localhost:5601 
+----
+endif::win_os[]
+
+endif::only-elasticsearch[]
+

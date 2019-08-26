@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 /*
 Package status fetches MySQL server status metrics.
 
@@ -9,75 +26,56 @@ package status
 import (
 	"database/sql"
 
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/metricbeat/mb"
 	"github.com/elastic/beats/metricbeat/module/mysql"
 
 	"github.com/pkg/errors"
 )
 
-var (
-	debugf = logp.MakeDebug("mysql-status")
-)
-
 func init() {
-	if err := mb.Registry.AddMetricSet("mysql", "status", New); err != nil {
-		panic(err)
-	}
+	mb.Registry.MustAddMetricSet("mysql", "status", New,
+		mb.WithHostParser(mysql.ParseDSN),
+		mb.DefaultMetricSet(),
+	)
 }
 
 // MetricSet for fetching MySQL server status.
 type MetricSet struct {
 	mb.BaseMetricSet
-	dsn string
-	db  *sql.DB
+	db *sql.DB
 }
 
 // New creates and returns a new MetricSet instance.
 func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
-	// Unpack additional configuration options.
-	config := struct {
-		Hosts    []string `config:"hosts"    validate:"nonzero,required"`
-		Username string   `config:"username"`
-		Password string   `config:"password"`
-	}{
-		Username: "",
-		Password: "",
-	}
-	err := base.Module().UnpackConfig(&config)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create and validate the data source name.
-	dsn, err := mysql.CreateDSN(base.Host(), config.Username, config.Password, base.Module().Config().Timeout)
-	if err != nil {
-		return nil, err
-	}
-
-	return &MetricSet{
-		BaseMetricSet: base,
-		dsn:           dsn,
-	}, nil
+	return &MetricSet{BaseMetricSet: base}, nil
 }
 
 // Fetch fetches status messages from a mysql host.
-func (m *MetricSet) Fetch() (event common.MapStr, err error) {
+func (m *MetricSet) Fetch(reporter mb.ReporterV2) error {
 	if m.db == nil {
 		var err error
-		m.db, err = mysql.NewDB(m.dsn)
+		m.db, err = mysql.NewDB(m.HostData().URI)
 		if err != nil {
-			return nil, errors.Wrap(err, "mysql-status fetch failed")
+			return errors.Wrap(err, "mysql-status fetch failed")
 		}
 	}
 
 	status, err := m.loadStatus(m.db)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return eventMapping(status), nil
+	event := eventMapping(status)
+
+	if m.Module().Config().Raw {
+		event["raw"] = rawEventMapping(status)
+	}
+
+	reporter.Event(mb.Event{
+		MetricSetFields: event,
+	})
+
+	return nil
 }
 
 // loadStatus loads all status entries from the given database into an array.
@@ -104,4 +102,12 @@ func (m *MetricSet) loadStatus(db *sql.DB) (map[string]string, error) {
 	}
 
 	return mysqlStatus, nil
+}
+
+// Close closes the database connection and prevents future queries.
+func (m *MetricSet) Close() error {
+	if m.db == nil {
+		return nil
+	}
+	return errors.Wrap(m.db.Close(), "failed to close mysql database client")
 }

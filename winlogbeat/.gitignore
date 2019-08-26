@@ -1,5 +1,5 @@
 # Compiled Object files, Static and Dynamic libs (Shared Objects)
-winlogbeat
+/winlogbeat
 
 # Folders
 _obj
@@ -22,7 +22,7 @@ _testmain.go
 *.log
 *.bak
 *.winlogbeat.yml
-etc/*.dev.yml
+_meta/*.dev.yml
 
 cover/
 /tests/system/env/

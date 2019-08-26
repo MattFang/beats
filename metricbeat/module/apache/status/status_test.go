@@ -1,12 +1,32 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package status
 
 import (
+	"bufio"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +35,8 @@ import (
 	mbtest "github.com/elastic/beats/metricbeat/mb/testing"
 
 	"github.com/stretchr/testify/assert"
+
+	_ "github.com/elastic/beats/metricbeat/module/apache"
 )
 
 // response is a raw response copied from an Apache web server.
@@ -66,11 +88,13 @@ func TestFetchEventContents(t *testing.T) {
 		"hosts":      []string{server.URL},
 	}
 
-	f := mbtest.NewEventFetcher(t, config)
-	event, err := f.Fetch()
-	if !assert.NoError(t, err) {
-		t.FailNow()
+	f := mbtest.NewReportingMetricSetV2Error(t, config)
+	events, errs := mbtest.ReportingFetchV2Error(f)
+	if len(errs) > 0 {
+		t.Fatalf("Expected 0 error, had %d. %v\n", len(errs), errs)
 	}
+	assert.NotEmpty(t, events)
+	event := events[0].MetricSetFields
 
 	t.Logf("%s/%s event: %+v", f.Module().Name(), f.Name(), event.StringToPrint())
 
@@ -95,7 +119,7 @@ func TestFetchEventContents(t *testing.T) {
 	assert.Equal(t, 6750.8, cpu["system"])
 	assert.Equal(t, 14076.6, cpu["user"])
 
-	assert.Equal(t, server.URL, event["hostname"])
+	assert.Equal(t, server.URL[7:], event["hostname"])
 
 	load := event["load"].(common.MapStr)
 	assert.Equal(t, .02, load["1"])
@@ -121,8 +145,8 @@ func TestFetchEventContents(t *testing.T) {
 	assert.EqualValues(t, 63, event["total_kbytes"])
 
 	uptime := event["uptime"].(common.MapStr)
-	assert.EqualValues(t, 1026782, uptime["server_uptime"])
 	assert.EqualValues(t, 1026782, uptime["uptime"])
+	assert.EqualValues(t, 1026782, uptime["server_uptime"])
 }
 
 // TestFetchTimeout verifies that the HTTP request times out and an error is
@@ -132,7 +156,7 @@ func TestFetchTimeout(t *testing.T) {
 		w.WriteHeader(200)
 		w.Header().Set("Content-Type", "text/plain; charset=ISO-8859-1")
 		w.Write([]byte(response))
-		time.Sleep(100 * time.Millisecond)
+		<-r.Context().Done()
 	}))
 	defer server.Close()
 
@@ -143,13 +167,23 @@ func TestFetchTimeout(t *testing.T) {
 		"timeout":    "50ms",
 	}
 
-	f := mbtest.NewEventFetcher(t, config)
+	f := mbtest.NewReportingMetricSetV2Error(t, config)
 
 	start := time.Now()
-	_, err := f.Fetch()
+	events, errs := mbtest.ReportingFetchV2Error(f)
+	if len(errs) == 0 {
+		t.Fatalf("Expected an error, had %d. %v\n", len(errs), errs)
+	}
+	assert.Empty(t, events)
 	elapsed := time.Since(start)
-	if assert.Error(t, err) {
-		assert.Contains(t, err.Error(), "request canceled (Client.Timeout exceeded")
+	var found bool
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "request canceled (Client.Timeout exceeded") {
+			found = true
+		}
+	}
+	if !found {
+		assert.Failf(t, "", "expected an error containing 'request canceled (Client.Timeout exceeded'. Got %v", errs)
 	}
 
 	// Elapsed should be ~50ms, sometimes it can be up to 1s
@@ -182,12 +216,12 @@ func TestMultipleFetches(t *testing.T) {
 		"hosts":      []string{server.URL},
 	}
 
-	f := mbtest.NewEventFetcher(t, config)
+	f := mbtest.NewReportingMetricSetV2Error(t, config)
 
 	for i := 0; i < 20; i++ {
-		_, err := f.Fetch()
-		if !assert.NoError(t, err) {
-			t.FailNow()
+		_, errs := mbtest.ReportingFetchV2Error(f)
+		if len(errs) > 0 {
+			t.Fatalf("Expected 0 error, had %d. %v\n", len(errs), errs)
 		}
 	}
 
@@ -197,14 +231,14 @@ func TestMultipleFetches(t *testing.T) {
 	connLock.Unlock()
 }
 
-func TestHostParse(t *testing.T) {
+func TestHostParser(t *testing.T) {
 	var tests = []struct {
 		host string
 		url  string
 		err  string
 	}{
-		{"", "", "error parsing apache host: empty host"},
-		{":80", "", "error parsing apache host: parse :80: missing protocol scheme"},
+		{"", "", "empty host"},
+		{":80", "", "empty host"},
 		{"localhost", "http://localhost/server-status?auto=", ""},
 		{"localhost/ServerStatus", "http://localhost/ServerStatus?auto=", ""},
 		{"127.0.0.1", "http://127.0.0.1/server-status?auto=", ""},
@@ -214,21 +248,30 @@ func TestHostParse(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		u, err := getURL("", "", defaultPath, test.host)
+		hostData, err := hostParser(mbtest.NewTestModule(t, map[string]interface{}{}), test.host)
 		if err != nil && test.err != "" {
-			assert.Equal(t, test.err, err.Error())
+			assert.Contains(t, err.Error(), test.err)
 		} else if assert.NoError(t, err, "unexpected error") {
-			assert.Equal(t, test.url, u.String())
+			assert.Equal(t, test.url, hostData.URI)
 		}
 	}
 }
 
-func TestRedactPassword(t *testing.T) {
-	rawURL := "https://admin:secret@127.0.0.1"
-	u, err := url.Parse(rawURL)
-	if assert.NoError(t, err) {
-		assert.Equal(t, "https://admin@127.0.0.1", redactPassword(*u))
-		// redactPassword shall not modify the URL.
-		assert.Equal(t, rawURL, u.String())
+// Test event mapping for different apache status outputs
+func TestStatusOutputs(t *testing.T) {
+	files, err := filepath.Glob("./_meta/test/status_*")
+	assert.NoError(t, err)
+
+	for _, filename := range files {
+		f, err := os.Open(filename)
+		assert.NoError(t, err, "cannot open test file "+filename)
+		scanner := bufio.NewScanner(f)
+
+		_, err = eventMapping(scanner, "localhost")
+		assert.NoError(t, err, "error mapping "+filename)
 	}
+}
+
+func TestData(t *testing.T) {
+	mbtest.TestDataFiles(t, "apache", "status")
 }

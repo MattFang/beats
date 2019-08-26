@@ -1,13 +1,31 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package amqp
 
 import (
 	"encoding/binary"
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/libbeat/logp"
 )
 
 func getTable(fields common.MapStr, data []byte, offset uint32) (next uint32, err bool, exists bool) {
@@ -71,16 +89,16 @@ func fieldUnmarshal(table common.MapStr, data []byte, offset uint32, length uint
 	//get name of the field. If it's an array, it will be the index parameter as a
 	//string. If it's a table, it will be the name of the field.
 	if index < 0 {
-		field_name, offset_temp, err := getShortString(data, offset+1, uint32(data[offset]))
+		fieldName, offsetTemp, err := getShortString(data, offset+1, uint32(data[offset]))
 		if err {
 			logp.Warn("Failed to get short string in table")
 			return true
 		}
-		name = field_name
-		offset = offset_temp
+		name = fieldName
+		offset = offsetTemp
 	} else {
 		name = strconv.Itoa(index)
-		index += 1
+		index++
 	}
 
 	switch data[offset] {
@@ -175,13 +193,13 @@ func fieldUnmarshal(table common.MapStr, data []byte, offset uint32, length uint
 		offset = next
 	case noField:
 		table[name] = nil
-		offset += 1
+		offset++
 	case byteArray:
 		size := binary.BigEndian.Uint32(data[offset+1 : offset+5])
 		table[name] = bodyToByteArray(data[offset+1+size : offset+5+size])
 		offset += 5 + size
 	default:
-		//unkown field
+		//unknown field
 		return true
 	}
 	//advance to next field recursively
@@ -190,8 +208,7 @@ func fieldUnmarshal(table common.MapStr, data []byte, offset uint32, length uint
 
 // function to convert a body slice into a byte array
 func bodyToByteArray(data []byte) string {
-	var ret []string = make([]string, len(data))
-
+	ret := make([]string, len(data))
 	for i, c := range data {
 		ret[i] = strconv.Itoa(int(c))
 	}

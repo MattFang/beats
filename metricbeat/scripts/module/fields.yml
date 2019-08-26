@@ -1,7 +1,8 @@
 - key: {module}
   title: "{module}"
+  release: beta
   description: >
-    {module} Module
+    {module} module
   fields:
     - name: {module}
       type: group

@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package thrift
 
 import (
@@ -8,14 +25,14 @@ import (
 	"github.com/elastic/beats/libbeat/logp"
 )
 
-func thriftIdlForTesting(t *testing.T, content string) *ThriftIdl {
+func thriftIdlForTesting(t *testing.T, content string) *thriftIdl {
 	f, _ := ioutil.TempFile("", "")
 	defer os.Remove(f.Name())
 
 	f.WriteString(content)
 	f.Close()
 
-	idl, err := NewThriftIdl([]string{f.Name()})
+	idl, err := newThriftIdl([]string{f.Name()})
 	if err != nil {
 		t.Fatal("Parsing failed:", err)
 	}
@@ -24,10 +41,7 @@ func thriftIdlForTesting(t *testing.T, content string) *ThriftIdl {
 }
 
 func TestThriftIdl_thriftReadFiles(t *testing.T) {
-
-	if testing.Verbose() {
-		logp.LogInit(logp.LOG_DEBUG, "", false, true, []string{"thrift", "thriftdetailed"})
-	}
+	logp.TestingSetup(logp.WithSelectors("thrift", "thriftdetailed"))
 
 	idl := thriftIdlForTesting(t, `
 /* simple test */
@@ -36,20 +50,20 @@ service Test {
 }
 `)
 
-	methods_map := idl.MethodsByName
-	if len(methods_map) == 0 {
+	methodsMap := idl.methodsByName
+	if len(methodsMap) == 0 {
 		t.Error("Empty methods_map")
 	}
-	m, exists := methods_map["add"]
-	if !exists || m.Service == nil || m.Method == nil ||
-		m.Service.Name != "Test" || m.Method.Name != "add" {
+	m, exists := methodsMap["add"]
+	if !exists || m.service == nil || m.method == nil ||
+		m.service.Name != "Test" || m.method.Name != "add" {
 
 		t.Error("Bad data:", m)
 	}
-	if *m.Params[1] != "num1" || *m.Params[2] != "num2" {
-		t.Error("Bad params", m.Params)
+	if *m.params[1] != "num1" || *m.params[2] != "num2" {
+		t.Error("Bad params", m.params)
 	}
-	if len(m.Exceptions) != 0 {
-		t.Error("Non empty exceptions", m.Exceptions)
+	if len(m.exceptions) != 0 {
+		t.Error("Non empty exceptions", m.exceptions)
 	}
 }

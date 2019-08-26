@@ -1,31 +1,49 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package cassandra
 
 import (
 	"errors"
+	"time"
+
 	"github.com/elastic/beats/libbeat/common/streambuf"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/packetbeat/protos/applayer"
-	. "github.com/elastic/beats/packetbeat/protos/cassandra/internal/gocql"
-	"time"
+
+	gocql "github.com/elastic/beats/packetbeat/protos/cassandra/internal/gocql"
 )
 
 type parser struct {
 	buf       streambuf.Buffer
 	config    *parserConfig
-	framer    *Framer
+	framer    *gocql.Framer
 	message   *message
 	onMessage func(m *message) error
 }
 
 type parserConfig struct {
 	maxBytes   int
-	compressor Compressor
-	ignoredOps map[FrameOp]bool
+	compressor gocql.Compressor
+	ignoredOps map[gocql.FrameOp]bool
 }
 
 // check whether this ops is enabled or not
 func (p *parser) CheckFrameOpsIgnored() bool {
-
 	if p.config.ignoredOps != nil && len(p.config.ignoredOps) > 0 {
 		//default map value is false
 		v := p.config.ignoredOps[p.framer.Header.Op]
@@ -58,7 +76,7 @@ type message struct {
 
 // Error code if stream exceeds max allowed size on append.
 var (
-	ErrStreamTooLarge = errors.New("Stream data too large")
+	errStreamTooLarge = errors.New("Stream data too large")
 	isDebug           = false
 )
 
@@ -83,7 +101,7 @@ func (p *parser) append(data []byte) error {
 	}
 
 	if p.config.maxBytes > 0 && p.buf.Total() > p.config.maxBytes {
-		return ErrStreamTooLarge
+		return errStreamTooLarge
 	}
 	return nil
 }
@@ -129,7 +147,6 @@ func (p *parser) newMessage(ts time.Time) *message {
 }
 
 func (p *parser) parserBody() (bool, error) {
-
 	headLen := p.framer.Header.HeadLength
 	bdyLen := p.framer.Header.BodyLength
 	if bdyLen <= 0 {
@@ -189,13 +206,12 @@ func (p *parser) parserBody() (bool, error) {
 }
 
 func (p *parser) parse() (*message, error) {
-
 	// if p.frame is nil then create a new framer, or continue to process the last message
 	if p.framer == nil {
 		if isDebug {
 			debugf("start new framer")
 		}
-		p.framer = NewFramer(&p.buf, p.config.compressor)
+		p.framer = gocql.NewFramer(&p.buf, p.config.compressor)
 	}
 
 	// check if the frame header were parsed or not

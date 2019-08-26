@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package streambuf
 
 // read integers in network byte order
@@ -55,7 +72,7 @@ func (b *Buffer) ReadNetUint16() (uint16, error) {
 	if err := b.Advance(2); err != nil {
 		return 0, err
 	}
-	value := common.Bytes_Ntohs(tmp)
+	value := common.BytesNtohs(tmp)
 	return value, nil
 }
 
@@ -73,8 +90,7 @@ func (b *Buffer) ReadNetUint16At(index int) (uint16, error) {
 	if !b.Avail(2 + index) {
 		return 0, b.bufferEndError()
 	}
-	return common.Bytes_Ntohs(b.data[index+b.mark:]), nil
-
+	return common.BytesNtohs(b.data[index+b.mark:]), nil
 }
 
 // Write 16bit binary value at index in network byte order to buffer.
@@ -98,7 +114,7 @@ func (b *Buffer) ReadNetUint32() (uint32, error) {
 	if err := b.Advance(4); err != nil {
 		return 0, err
 	}
-	value := common.Bytes_Ntohl(tmp)
+	value := common.BytesNtohl(tmp)
 	return value, nil
 }
 
@@ -116,8 +132,7 @@ func (b *Buffer) ReadNetUint32At(index int) (uint32, error) {
 	if !b.Avail(4 + index) {
 		return 0, b.bufferEndError()
 	}
-	return common.Bytes_Ntohl(b.data[index+b.mark:]), nil
-
+	return common.BytesNtohl(b.data[index+b.mark:]), nil
 }
 
 // Write 32bit binary value at index in network byte order to buffer.
@@ -143,7 +158,7 @@ func (b *Buffer) ReadNetUint64() (uint64, error) {
 	if err := b.Advance(8); err != nil {
 		return 0, err
 	}
-	value := common.Bytes_Ntohll(tmp)
+	value := common.BytesNtohll(tmp)
 	return value, nil
 }
 
@@ -161,8 +176,7 @@ func (b *Buffer) ReadNetUint64At(index int) (uint64, error) {
 	if !b.Avail(8 + index) {
 		return 0, b.bufferEndError()
 	}
-	return common.Bytes_Ntohll(b.data[index+b.mark:]), nil
-
+	return common.BytesNtohll(b.data[index+b.mark:]), nil
 }
 
 // Write 64bit binary value at index in network byte order to buffer.

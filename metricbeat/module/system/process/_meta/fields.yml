@@ -2,55 +2,75 @@
   type: group
   description: >
     `process` contains process metadata, CPU metrics, and memory metrics.
+  release: ga
   fields:
     - name: name
-      type: keyword
-      description: >
-        The process name.
+      type: alias
+      path: process.name
+      migration: true
     - name: state
       type: keyword
       description: >
         The process state. For example: "running".
     - name: pid
-      type: long
-      description: >
-        The process pid.
+      type: alias
+      path: process.pid
+      migration: true
     - name: ppid
-      type: long
-      description: >
-        The process parent pid.
+      type: alias
+      path: process.ppid
+      migration: true
     - name: pgid
-      type: long
-      description: >
-        The process group id.
+      type: alias
+      path: process.pgid
+      migration: true
     - name: cmdline
       type: keyword
       description: >
         The full command-line used to start the process, including the
         arguments separated by space.
+      ignore_above: 2048
     - name: username
-      type: keyword
+      type: alias
+      path: user.name
+      migration: true
+    - name: cwd
+      type: alias
+      path: process.working_directory
+      migration: true
+    - name: env
+      type: object
+      object_type: keyword
       description: >
-        The username of the user that created the process. If the username
-        cannot be determined, the field will contain the user's
-        numeric identifier (UID). On Windows, this field includes the user's
-        domain and is formatted as `domain\username`.
+        The environment variables used to start the process. The data is
+        available on FreeBSD, Linux, and OS X.
     - name: cpu
       type: group
       prefix: "[float]"
       description: CPU-specific statistics per process.
       fields:
-        - name: user
+        - name: user.ticks
           type: long
           description: >
             The amount of CPU time the process spent in user space.
+        - name: total.value
+          type: long
+          description: >
+            The value of CPU usage since starting the process.
         - name: total.pct
           type: scaled_float
           format: percent
           description: >
             The percentage of CPU time spent by the process since the last update. Its value is similar to the
             %CPU value of the process displayed by the top command on Unix systems.
-        - name: system
+        - name: total.norm.pct
+          type: scaled_float
+          format: percent
+          description: >
+            The percentage of CPU time spent by the process since the last event.
+            This value is normalized by the number of CPU cores and it ranges
+            from 0 to 100%.
+        - name: system.ticks
           type: long
           description: >
             The amount of CPU time the process spent in kernel space.
@@ -110,8 +130,6 @@
     - name: cgroup
       type: group
       description: >
-        experimental[]
-
         Metrics and limits from the cgroup of which the task is a member.
         cgroup metrics are reported when the process has membership in a
         non-root cgroup. These metrics are only available on Linux.
@@ -231,8 +249,8 @@
               description: CPU time consumed by tasks in user (kernel) mode.
 
             - name: percpu
-              type: dict
-              dict-type: long
+              type: object
+              object_type: long
               description: >
                 CPU time (in nanoseconds) consumed on each CPU by all tasks in
                 this cgroup.
@@ -467,14 +485,14 @@
                 Path to the cgroup relative to the cgroup subsystems mountpoint.
 
             - name: total.bytes
-              type: keyword
+              type: long
               format: bytes
               description: >
                 Total number of bytes transferred to and from all block devices
                 by processes in the cgroup.
 
             - name: total.ios
-              type: keyword
+              type: long
               description: >
                 Total number of I/O operations performed on all devices
                 by processes in the cgroup as seen by the throttling policy.

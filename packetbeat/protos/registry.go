@@ -1,17 +1,37 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package protos
 
 import (
 	"time"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/packetbeat/publish"
 )
 
 type ProtocolPlugin func(
 	testMode bool,
-	results publish.Transactions,
+	results Reporter,
 	cfg *common.Config,
 ) (Plugin, error)
+
+// Reporter is used by plugin instances to report new transaction events.
+type Reporter func(beat.Event)
 
 // Functions to be exported by a protocol plugin
 type Plugin interface {
@@ -19,20 +39,20 @@ type Plugin interface {
 	GetPorts() []int
 }
 
-type TcpPlugin interface {
+type TCPPlugin interface {
 	Plugin
 
 	// Called when TCP payload data is available for parsing.
-	Parse(pkt *Packet, tcptuple *common.TcpTuple,
+	Parse(pkt *Packet, tcptuple *common.TCPTuple,
 		dir uint8, private ProtocolData) ProtocolData
 
 	// Called when the FIN flag is seen in the TCP stream.
-	ReceivedFin(tcptuple *common.TcpTuple, dir uint8,
+	ReceivedFin(tcptuple *common.TCPTuple, dir uint8,
 		private ProtocolData) ProtocolData
 
 	// Called when a packets are missing from the tcp
 	// stream.
-	GapInStream(tcptuple *common.TcpTuple, dir uint8, nbytes int,
+	GapInStream(tcptuple *common.TCPTuple, dir uint8, nbytes int,
 		private ProtocolData) (priv ProtocolData, drop bool)
 
 	// ConnectionTimeout returns the per stream connection timeout.
@@ -40,11 +60,20 @@ type TcpPlugin interface {
 	ConnectionTimeout() time.Duration
 }
 
-type UdpPlugin interface {
+type UDPPlugin interface {
 	Plugin
 
-	// ParseUdp is invoked when UDP payload data is available for parsing.
-	ParseUdp(pkt *Packet)
+	// ParseUDP is invoked when UDP payload data is available for parsing.
+	ParseUDP(pkt *Packet)
+}
+
+// ExpirationAwareTCPPlugin is a TCPPlugin that also provides the Expired()
+// method. No need to use this type directly, just implement the method.
+type ExpirationAwareTCPPlugin interface {
+	TCPPlugin
+
+	// Expired is called when the TCP stream is expired due to connection timeout.
+	Expired(tuple *common.TCPTuple, private ProtocolData)
 }
 
 // Protocol identifier.

@@ -1,48 +1,47 @@
 = Packetbeat Reference
 
-include::./version.asciidoc[]
+:libbeat-dir: ../../libbeat
 
-:libbeat: http://www.elastic.co/guide/en/beats/libbeat/{doc-branch}
-:packetbeat: http://www.elastic.co/guide/en/beats/packetbeat/{doc-branch}
-:metricbeat: http://www.elastic.co/guide/en/beats/metricbeat/{doc-branch}
-:filebeat: http://www.elastic.co/guide/en/beats/filebeat/{doc-branch}
-:winlogbeat: http://www.elastic.co/guide/en/beats/winlogbeat/{doc-branch}
-:elasticsearch: https://www.elastic.co/guide/en/elasticsearch/reference/{doc-branch}
-:securitydoc: https://www.elastic.co/guide/en/shield/current
+include::{libbeat-dir}/docs/version.asciidoc[]
+
+include::{asciidoc-dir}/../../shared/attributes.asciidoc[]
+
 :version: {stack-version}
 :beatname_lc: packetbeat
 :beatname_uc: Packetbeat
-:security: X-Pack Security
+:beatname_pkg: {beatname_lc}
+:github_repo_name: beats
+:discuss_forum: beats/{beatname_lc}
+:beat_default_index_prefix: {beatname_lc}
+:has_ml_jobs: yes
+:requires-sudo:
+:has_map:
+:deb_os:
+:rpm_os:
+:mac_os:
+:linux_os:
+:docker_platform:
+:win_os:
+
+include::{libbeat-dir}/docs/shared-beats-attributes.asciidoc[]
 
 include::./overview.asciidoc[]
 
 include::./gettingstarted.asciidoc[]
 
-include::./command-line.asciidoc[]
+include::{libbeat-dir}/docs/repositories.asciidoc[]
 
-include::../../libbeat/docs/shared-directory-layout.asciidoc[]
+include::./setting-up-running.asciidoc[]
+
+include::./upgrading.asciidoc[]
 
 include::./configuring-howto.asciidoc[]
 
-include::./packetbeat-filtering.asciidoc[]
-
-include::../../libbeat/docs/shared-config-ingest.asciidoc[]
-
-include::./configuring-logstash.asciidoc[]
-
-include::../../libbeat/docs/shared-env-vars.asciidoc[]
-
-include::./capturing.asciidoc[]
-
-include::./thrift.asciidoc[]
-
-include::./maintaining-topology.asciidoc[]
-
-include::../../libbeat/docs/yaml.asciidoc[]
-
 include::./fields.asciidoc[]
 
-include::./securing-packetbeat.asciidoc[]
+include::{libbeat-dir}/docs/monitoring/monitoring-beats.asciidoc[]
+
+include::{libbeat-dir}/docs/shared-securing-beat.asciidoc[]
 
 include::./visualizing-data-packetbeat.asciidoc[]
 
@@ -52,4 +51,4 @@ include::./troubleshooting.asciidoc[]
 
 include::./faq.asciidoc[]
 
-include::./new_protocol.asciidoc[]
+include::{libbeat-dir}/docs/contributing-to-beats.asciidoc[]

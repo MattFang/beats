@@ -1,8 +1,30 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package cassandra
 
 import (
+	"time"
+
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/packetbeat/publish"
+
+	"github.com/elastic/beats/packetbeat/pb"
+	"github.com/elastic/beats/packetbeat/protos"
 )
 
 // Transaction Publisher.
@@ -13,7 +35,7 @@ type transPub struct {
 	sendResponseHeader bool
 	ignoredOps         string
 
-	results publish.Transactions
+	results protos.Reporter
 }
 
 func (pub *transPub) onTransaction(requ, resp *message) error {
@@ -22,101 +44,93 @@ func (pub *transPub) onTransaction(requ, resp *message) error {
 	}
 
 	event := pub.createEvent(requ, resp)
-	if event != nil {
-		pub.results.PublishTransaction(event)
+	if event.Fields != nil {
+		pub.results(event)
 	}
 	return nil
 }
 
-func (pub *transPub) createEvent(requ, resp *message) common.MapStr {
+func (pub *transPub) createEvent(requ, resp *message) beat.Event {
+	// Ignore.
+	if (requ == nil && resp == nil) || (resp != nil && resp.ignored) || (requ != nil && requ.ignored) {
+		return beat.Event{}
+	}
+
+	var ts time.Time
+	var src, dst common.Endpoint
+	for _, m := range []*message{requ, resp} {
+		if m == nil {
+			continue
+		}
+		ts = m.Ts
+		src, dst = common.MakeEndpointPair(m.Tuple.BaseTuple, m.CmdlineTuple)
+		break
+	}
+
+	evt, pbf := pb.NewBeatEvent(ts)
+	pbf.SetSource(&src)
+	pbf.SetDestination(&dst)
+	pbf.Event.Dataset = "cassandra"
+	pbf.Network.Transport = "tcp"
+	pbf.Network.Protocol = pbf.Event.Dataset
+
+	fields := evt.Fields
+	fields["type"] = pbf.Event.Dataset
+
+	cassandra := common.MapStr{}
 	status := common.OK_STATUS
-
-	if resp.failed {
-		status = common.ERROR_STATUS
-	}
-
-	//ignore
-	if (resp != nil && resp.ignored) || (requ != nil && requ.ignored) {
-		return nil
-	}
-
-	event := common.MapStr{
-		"type":      "cassandra",
-		"status":    status,
-		"cassandra": common.MapStr{},
-	}
 
 	//requ can be null, if the message is a PUSHed message
 	if requ != nil {
-		// resp_time in milliseconds
-		responseTime := int32(resp.Ts.Sub(requ.Ts).Nanoseconds() / 1e6)
-
-		src := &common.Endpoint{
-			Ip:   requ.Tuple.Src_ip.String(),
-			Port: requ.Tuple.Src_port,
-			Proc: string(requ.CmdlineTuple.Src),
-		}
-
-		event["@timestamp"] = common.Time(requ.Ts)
-		event["responsetime"] = responseTime
-		event["bytes_in"] = requ.Size
-		event["src"] = src
-
-		// add processing notes/errors to event
-		if len(requ.Notes)+len(resp.Notes) > 0 {
-			event["notes"] = append(requ.Notes, resp.Notes...)
-		}
+		pbf.Source.Bytes = int64(requ.Size)
+		pbf.Event.Start = requ.Ts
+		pbf.Error.Message = requ.Notes
 
 		if pub.sendRequest {
 			if pub.sendRequestHeader {
 				if requ.data == nil {
-					requ.data = map[string]interface{}{}
+					requ.data = common.MapStr{}
 				}
 				requ.data["headers"] = requ.header
 			}
 
 			if len(requ.data) > 0 {
-				event["cassandra"].(common.MapStr)["request"] = requ.data
+				cassandra["request"] = requ.data
 			}
 		}
-
-		dst := &common.Endpoint{
-			Ip:   requ.Tuple.Dst_ip.String(),
-			Port: requ.Tuple.Dst_port,
-			Proc: string(requ.CmdlineTuple.Dst),
-		}
-		event["dst"] = dst
-
 	} else {
 		//dealing with PUSH message
-		event["no_request"] = true
-		event["@timestamp"] = common.Time(resp.Ts)
-
-		dst := &common.Endpoint{
-			Ip:   resp.Tuple.Dst_ip.String(),
-			Port: resp.Tuple.Dst_port,
-			Proc: string(resp.CmdlineTuple.Dst),
-		}
-		event["dst"] = dst
+		cassandra["no_request"] = true
 	}
 
-	event["bytes_out"] = resp.Size
+	if resp != nil {
+		pbf.Destination.Bytes = int64(resp.Size)
+		pbf.Event.End = resp.Ts
+		pbf.Error.Message = append(pbf.Error.Message, resp.Notes...)
 
-	if pub.sendResponse {
+		if resp.failed {
+			status = common.ERROR_STATUS
+		}
 
-		if pub.sendResponseHeader {
-			if resp.data == nil {
-				resp.data = map[string]interface{}{}
+		if pub.sendResponse {
+			if pub.sendResponseHeader {
+				if resp.data == nil {
+					resp.data = common.MapStr{}
+				}
+				resp.data["headers"] = resp.header
 			}
 
-			resp.data["headers"] = resp.header
+			if len(resp.data) > 0 {
+				cassandra["response"] = resp.data
+			}
 		}
-
-		if len(resp.data) > 0 {
-			event["cassandra"].(common.MapStr)["response"] = resp.data
-		}
-
 	}
 
-	return event
+	fields["status"] = status
+
+	if len(cassandra) > 0 {
+		fields["cassandra"] = cassandra
+	}
+
+	return evt
 }

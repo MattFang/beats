@@ -1,9 +1,27 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package sys
 
 import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,9 +103,9 @@ func TestXML(t *testing.T) {
 				User:            SID{Identifier: "S-1-5-21-3541430928-2051711210-1391384369-1001"},
 				EventData: EventData{
 					Pairs: []KeyValue{
-						KeyValue{"param1", "winlogbeat"},
-						KeyValue{"param2", "running"},
-						KeyValue{"Binary", "770069006E006C006F00670062006500610074002F0034000000"},
+						{"param1", "winlogbeat"},
+						{"param2", "running"},
+						{"Binary", "770069006E006C006F00670062006500610074002F0034000000"},
 					},
 				},
 				UserData: UserData{
@@ -96,8 +114,8 @@ func TestXML(t *testing.T) {
 						Space: "Event_NS",
 					},
 					Pairs: []KeyValue{
-						KeyValue{"ServerName", `\\VAGRANT-2012-R2`},
-						KeyValue{"UserName", "vagrant"},
+						{"ServerName", `\\VAGRANT-2012-R2`},
+						{"UserName", "vagrant"},
 					},
 				},
 				Message:                 "Creating WSMan shell on server with ResourceUri: %1",
@@ -126,7 +144,7 @@ func TestXML(t *testing.T) {
 						Space: "http://manifests.microsoft.com/win/2006/windows/WMI",
 					},
 					Pairs: []KeyValue{
-						KeyValue{"Id", "{00000000-0000-0000-0000-000000000000}"},
+						{"Id", "{00000000-0000-0000-0000-000000000000}"},
 					},
 				},
 			},
@@ -149,6 +167,15 @@ func TestXML(t *testing.T) {
 			fmt.Println(string(json))
 		}
 	}
+}
+
+// Tests that control characters other than CR and LF are escaped
+// when the event is decoded.
+func TestInvalidXML(t *testing.T) {
+	evXML := strings.Replace(allXML, "%1", "\t&#xD;\n\x1b", -1)
+	ev, err := UnmarshalEventXML([]byte(evXML))
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "Creating WSMan shell on server with ResourceUri: \t\r\n\\u001b", ev.Message)
 }
 
 func BenchmarkXMLUnmarshal(b *testing.B) {

@@ -3,6 +3,7 @@
   description: >
     `system.fsstat` contains filesystem metrics aggregated from all mounted
     filesystems.
+  release: ga
   fields:
     - name: count
       type: long

@@ -1,29 +1,39 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package icmp
 
 import (
-	"expvar"
 	"net"
 	"time"
 
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/monitoring"
+	"github.com/elastic/ecs/code/go/ecs"
 
 	"github.com/elastic/beats/packetbeat/flows"
+	"github.com/elastic/beats/packetbeat/pb"
 	"github.com/elastic/beats/packetbeat/protos"
-	"github.com/elastic/beats/packetbeat/publish"
 
 	"github.com/tsg/gopacket/layers"
 )
 
-type ICMPv4Processor interface {
-	ProcessICMPv4(flowID *flows.FlowID, hdr *layers.ICMPv4, pkt *protos.Packet)
-}
-
-type ICMPv6Processor interface {
-	ProcessICMPv6(flowID *flows.FlowID, hdr *layers.ICMPv6, pkt *protos.Packet)
-}
-
-type Icmp struct {
+type icmpPlugin struct {
 	sendRequest  bool
 	sendResponse bool
 
@@ -34,7 +44,15 @@ type Icmp struct {
 	transactions       *common.Cache
 	transactionTimeout time.Duration
 
-	results publish.Transactions
+	results protos.Reporter
+}
+
+type ICMPv4Processor interface {
+	ProcessICMPv4(flowID *flows.FlowID, hdr *layers.ICMPv4, pkt *protos.Packet)
+}
+
+type ICMPv6Processor interface {
+	ProcessICMPv6(flowID *flows.FlowID, hdr *layers.ICMPv6, pkt *protos.Packet)
 }
 
 const (
@@ -51,13 +69,13 @@ const (
 )
 
 var (
-	unmatchedRequests  = expvar.NewInt("icmp.unmatched_requests")
-	unmatchedResponses = expvar.NewInt("icmp.unmatched_responses")
-	duplicateRequests  = expvar.NewInt("icmp.duplicate_requests")
+	unmatchedRequests  = monitoring.NewInt(nil, "icmp.unmatched_requests")
+	unmatchedResponses = monitoring.NewInt(nil, "icmp.unmatched_responses")
+	duplicateRequests  = monitoring.NewInt(nil, "icmp.duplicate_requests")
 )
 
-func New(testMode bool, results publish.Transactions, cfg *common.Config) (*Icmp, error) {
-	p := &Icmp{}
+func New(testMode bool, results protos.Reporter, cfg *common.Config) (*icmpPlugin, error) {
+	p := &icmpPlugin{}
 	config := defaultConfig
 	if !testMode {
 		if err := cfg.Unpack(&config); err != nil {
@@ -71,13 +89,13 @@ func New(testMode bool, results publish.Transactions, cfg *common.Config) (*Icmp
 	return p, nil
 }
 
-func (icmp *Icmp) init(results publish.Transactions, config *icmpConfig) error {
+func (icmp *icmpPlugin) init(results protos.Reporter, config *icmpConfig) error {
 	icmp.setFromConfig(config)
 
 	var err error
-	icmp.localIps, err = common.LocalIpAddrs()
+	icmp.localIps, err = common.LocalIPAddrs()
 	if err != nil {
-		logp.Err("icmp", "Error getting local IP addresses: %s", err)
+		logp.Err("Error getting local IP addresses: %+v", err)
 		icmp.localIps = []net.IP{}
 	}
 	logp.Debug("icmp", "Local IP addresses: %s", icmp.localIps)
@@ -98,13 +116,13 @@ func (icmp *Icmp) init(results publish.Transactions, config *icmpConfig) error {
 	return nil
 }
 
-func (icmp *Icmp) setFromConfig(config *icmpConfig) {
+func (icmp *icmpPlugin) setFromConfig(config *icmpConfig) {
 	icmp.sendRequest = config.SendRequest
 	icmp.sendResponse = config.SendResponse
 	icmp.transactionTimeout = config.TransactionTimeout
 }
 
-func (icmp *Icmp) ProcessICMPv4(
+func (icmp *icmpPlugin) ProcessICMPv4(
 	flowID *flows.FlowID,
 	icmp4 *layers.ICMPv4,
 	pkt *protos.Packet,
@@ -114,17 +132,17 @@ func (icmp *Icmp) ProcessICMPv4(
 	id, seq := extractTrackingData(4, typ, &icmp4.BaseLayer)
 
 	tuple := &icmpTuple{
-		IcmpVersion: 4,
-		SrcIp:       pkt.Tuple.Src_ip,
-		DstIp:       pkt.Tuple.Dst_ip,
-		Id:          id,
-		Seq:         seq,
+		icmpVersion: 4,
+		srcIP:       pkt.Tuple.SrcIP,
+		dstIP:       pkt.Tuple.DstIP,
+		id:          id,
+		seq:         seq,
 	}
 	msg := &icmpMessage{
-		Ts:     pkt.Ts,
+		ts:     pkt.Ts,
 		Type:   typ,
-		Code:   code,
-		Length: len(icmp4.BaseLayer.Payload),
+		code:   code,
+		length: len(icmp4.BaseLayer.Payload),
 	}
 
 	if isRequest(tuple, msg) {
@@ -140,7 +158,7 @@ func (icmp *Icmp) ProcessICMPv4(
 	}
 }
 
-func (icmp *Icmp) ProcessICMPv6(
+func (icmp *icmpPlugin) ProcessICMPv6(
 	flowID *flows.FlowID,
 	icmp6 *layers.ICMPv6,
 	pkt *protos.Packet,
@@ -149,17 +167,17 @@ func (icmp *Icmp) ProcessICMPv6(
 	code := uint8(icmp6.TypeCode)
 	id, seq := extractTrackingData(6, typ, &icmp6.BaseLayer)
 	tuple := &icmpTuple{
-		IcmpVersion: 6,
-		SrcIp:       pkt.Tuple.Src_ip,
-		DstIp:       pkt.Tuple.Dst_ip,
-		Id:          id,
-		Seq:         seq,
+		icmpVersion: 6,
+		srcIP:       pkt.Tuple.SrcIP,
+		dstIP:       pkt.Tuple.DstIP,
+		id:          id,
+		seq:         seq,
 	}
 	msg := &icmpMessage{
-		Ts:     pkt.Ts,
+		ts:     pkt.Ts,
 		Type:   typ,
-		Code:   code,
-		Length: len(icmp6.BaseLayer.Payload),
+		code:   code,
+		length: len(icmp6.BaseLayer.Payload),
 	}
 
 	if isRequest(tuple, msg) {
@@ -175,19 +193,19 @@ func (icmp *Icmp) ProcessICMPv6(
 	}
 }
 
-func (icmp *Icmp) processRequest(tuple *icmpTuple, msg *icmpMessage) {
+func (icmp *icmpPlugin) processRequest(tuple *icmpTuple, msg *icmpMessage) {
 	logp.Debug("icmp", "Processing request. %s", tuple)
 
 	trans := icmp.deleteTransaction(tuple.Hashable())
 	if trans != nil {
-		trans.Notes = append(trans.Notes, duplicateRequestMsg)
+		trans.notes = append(trans.notes, duplicateRequestMsg)
 		logp.Debug("icmp", duplicateRequestMsg+" %s", tuple)
 		duplicateRequests.Add(1)
 		icmp.publishTransaction(trans)
 	}
 
-	trans = &icmpTransaction{Ts: msg.Ts, Tuple: *tuple}
-	trans.Request = msg
+	trans = &icmpTransaction{ts: msg.ts, tuple: *tuple}
+	trans.request = msg
 
 	if requiresCounterpart(tuple, msg) {
 		icmp.transactions.Put(tuple.Hashable(), trans)
@@ -196,39 +214,39 @@ func (icmp *Icmp) processRequest(tuple *icmpTuple, msg *icmpMessage) {
 	}
 }
 
-func (icmp *Icmp) processResponse(tuple *icmpTuple, msg *icmpMessage) {
+func (icmp *icmpPlugin) processResponse(tuple *icmpTuple, msg *icmpMessage) {
 	logp.Debug("icmp", "Processing response. %s", tuple)
 
 	revTuple := tuple.Reverse()
 	trans := icmp.deleteTransaction(revTuple.Hashable())
 	if trans == nil {
-		trans = &icmpTransaction{Ts: msg.Ts, Tuple: revTuple}
-		trans.Notes = append(trans.Notes, orphanedResponseMsg)
+		trans = &icmpTransaction{ts: msg.ts, tuple: revTuple}
+		trans.notes = append(trans.notes, orphanedResponseMsg)
 		logp.Debug("icmp", orphanedResponseMsg+" %s", tuple)
 		unmatchedResponses.Add(1)
 	}
 
-	trans.Response = msg
+	trans.response = msg
 	icmp.publishTransaction(trans)
 }
 
-func (icmp *Icmp) direction(t *icmpTransaction) uint8 {
-	if !icmp.isLocalIp(t.Tuple.SrcIp) {
+func (icmp *icmpPlugin) direction(t *icmpTransaction) uint8 {
+	if !icmp.isLocalIP(t.tuple.srcIP) {
 		return directionFromOutside
 	}
-	if !icmp.isLocalIp(t.Tuple.DstIp) {
+	if !icmp.isLocalIP(t.tuple.dstIP) {
 		return directionFromInside
 	}
 	return directionLocalOnly
 }
 
-func (icmp *Icmp) isLocalIp(ip net.IP) bool {
+func (icmp *icmpPlugin) isLocalIP(ip net.IP) bool {
 	if ip.IsLoopback() {
 		return true
 	}
 
-	for _, localIp := range icmp.localIps {
-		if ip.Equal(localIp) {
+	for _, localIP := range icmp.localIps {
+		if ip.Equal(localIP) {
 			return true
 		}
 	}
@@ -236,7 +254,7 @@ func (icmp *Icmp) isLocalIp(ip net.IP) bool {
 	return false
 }
 
-func (icmp *Icmp) getTransaction(k hashableIcmpTuple) *icmpTransaction {
+func (icmp *icmpPlugin) getTransaction(k hashableIcmpTuple) *icmpTransaction {
 	v := icmp.transactions.Get(k)
 	if v != nil {
 		return v.(*icmpTransaction)
@@ -244,7 +262,7 @@ func (icmp *Icmp) getTransaction(k hashableIcmpTuple) *icmpTransaction {
 	return nil
 }
 
-func (icmp *Icmp) deleteTransaction(k hashableIcmpTuple) *icmpTransaction {
+func (icmp *icmpPlugin) deleteTransaction(k hashableIcmpTuple) *icmpTransaction {
 	v := icmp.transactions.Delete(k)
 	if v != nil {
 		return v.(*icmpTransaction)
@@ -252,94 +270,77 @@ func (icmp *Icmp) deleteTransaction(k hashableIcmpTuple) *icmpTransaction {
 	return nil
 }
 
-func (icmp *Icmp) expireTransaction(tuple hashableIcmpTuple, trans *icmpTransaction) {
-	trans.Notes = append(trans.Notes, orphanedRequestMsg)
-	logp.Debug("icmp", orphanedRequestMsg+" %s", &trans.Tuple)
+func (icmp *icmpPlugin) expireTransaction(tuple hashableIcmpTuple, trans *icmpTransaction) {
+	trans.notes = append(trans.notes, orphanedRequestMsg)
+	logp.Debug("icmp", orphanedRequestMsg+" %s", &trans.tuple)
 	unmatchedRequests.Add(1)
 	icmp.publishTransaction(trans)
 }
 
-func (icmp *Icmp) publishTransaction(trans *icmpTransaction) {
+func (icmp *icmpPlugin) publishTransaction(trans *icmpTransaction) {
 	if icmp.results == nil {
 		return
 	}
 
-	logp.Debug("icmp", "Publishing transaction. %s", &trans.Tuple)
+	logp.Debug("icmp", "Publishing transaction. %s", &trans.tuple)
 
-	event := common.MapStr{}
-
-	// common fields - group "env"
-	event["client_ip"] = trans.Tuple.SrcIp
-	event["ip"] = trans.Tuple.DstIp
+	evt, pbf := pb.NewBeatEvent(trans.ts)
+	pbf.Source = &ecs.Source{IP: trans.tuple.srcIP.String()}
+	pbf.Destination = &ecs.Destination{IP: trans.tuple.dstIP.String()}
+	pbf.Event.Dataset = "icmp"
+	pbf.Error.Message = trans.notes
 
 	// common fields - group "event"
-	event["@timestamp"] = common.Time(trans.Ts) // timestamp of the first packet
-	event["type"] = "icmp"                      // protocol name
-	event["path"] = trans.Tuple.DstIp           // what is requested (dst ip)
+	fields := evt.Fields
+	fields["type"] = pbf.Event.Dataset
+	fields["path"] = trans.tuple.dstIP // what is requested (dst ip)
 	if trans.HasError() {
-		event["status"] = common.ERROR_STATUS
+		fields["status"] = common.ERROR_STATUS
 	} else {
-		event["status"] = common.OK_STATUS
-	}
-	if len(trans.Notes) > 0 {
-		event["notes"] = trans.Notes
+		fields["status"] = common.OK_STATUS
 	}
 
-	// common fields - group "measurements"
-	responsetime, hasResponseTime := trans.ResponseTimeMillis()
-	if hasResponseTime {
-		event["responsetime"] = responsetime
+	icmpEvent := common.MapStr{
+		"version": trans.tuple.icmpVersion,
 	}
-	switch icmp.direction(trans) {
-	case directionFromInside:
-		if trans.Request != nil {
-			event["bytes_out"] = trans.Request.Length
-		}
-		if trans.Response != nil {
-			event["bytes_in"] = trans.Response.Length
-		}
-	case directionFromOutside:
-		if trans.Request != nil {
-			event["bytes_in"] = trans.Request.Length
-		}
-		if trans.Response != nil {
-			event["bytes_out"] = trans.Response.Length
-		}
+	fields["icmp"] = icmpEvent
+
+	pbf.Network.Transport = pbf.Event.Dataset
+	if trans.tuple.icmpVersion == 6 {
+		pbf.Network.Transport = "ipv6-icmp"
 	}
 
-	// event fields - group "icmp"
-	icmpEvent := common.MapStr{}
-	event["icmp"] = icmpEvent
+	if trans.request != nil {
+		pbf.Event.Start = trans.request.ts
+		pbf.Source.Bytes = int64(trans.request.length)
 
-	icmpEvent["version"] = trans.Tuple.IcmpVersion
-
-	if trans.Request != nil {
-		request := common.MapStr{}
+		request := common.MapStr{
+			"message": humanReadable(&trans.tuple, trans.request),
+			"type":    trans.request.Type,
+			"code":    trans.request.code,
+		}
 		icmpEvent["request"] = request
 
-		request["message"] = humanReadable(&trans.Tuple, trans.Request)
-		request["type"] = trans.Request.Type
-		request["code"] = trans.Request.Code
-
-		// TODO: Add more info. The IPv4/IPv6 payload could be interesting.
-		// if icmp.SendRequest {
-		//     request["payload"] = ""
-		// }
+		pbf.ICMPType = trans.request.Type
+		pbf.ICMPCode = trans.request.code
 	}
 
-	if trans.Response != nil {
-		response := common.MapStr{}
+	if trans.response != nil {
+		pbf.Event.End = trans.response.ts
+		pbf.Destination.Bytes = int64(trans.response.length)
+
+		response := common.MapStr{
+			"message": humanReadable(&trans.tuple, trans.response),
+			"type":    trans.response.Type,
+			"code":    trans.response.code,
+		}
 		icmpEvent["response"] = response
 
-		response["message"] = humanReadable(&trans.Tuple, trans.Response)
-		response["type"] = trans.Response.Type
-		response["code"] = trans.Response.Code
-
-		// TODO: Add more info. The IPv4/IPv6 payload could be interesting.
-		// if icmp.SendResponse {
-		//     response["payload"] = ""
-		// }
+		if trans.request == nil {
+			pbf.ICMPType = trans.response.Type
+			pbf.ICMPCode = trans.response.code
+		}
 	}
 
-	icmp.results.PublishTransaction(event)
+	icmp.results(evt)
 }

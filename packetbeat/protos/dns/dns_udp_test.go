@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 // Unit tests and benchmarks for the dns package.
@@ -8,8 +25,6 @@
 // (skip the first 42 bytes).
 //
 // TODO:
-//   * Add test validation for responsetime to make sure unit conversion
-//     is being done correctly.
 //   * Add test case to verify that Include_authorities and Include_additionals
 //     are working.
 //   * Add test case for Send_request and validate the stringified DNS message.
@@ -18,28 +33,25 @@
 package dns
 
 import (
-	"fmt"
 	"math/rand"
 	"testing"
 	"time"
 
-	"github.com/elastic/beats/packetbeat/protos"
-	"github.com/elastic/beats/packetbeat/publish"
-
-	"github.com/elastic/beats/libbeat/common"
-
 	mkdns "github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/packetbeat/protos"
 )
 
 // Verify that the interface for UDP has been satisfied.
-var _ protos.UdpPlugin = &Dns{}
+var _ protos.UDPPlugin = &dnsPlugin{}
 
 // DNS messages for testing. When adding a new test message, add it to the
 // messages array and create a new benchmark test for the message.
 var (
 	// An array of all test messages.
-	messages = []DnsTestMessage{
+	messages = []dnsTestMessage{
 		elasticA,
 		zoneIxfr,
 		githubPtr,
@@ -47,15 +59,15 @@ var (
 		ednsSecA,
 	}
 
-	elasticA = DnsTestMessage{
+	elasticA = dnsTestMessage{
 		id:      8529,
 		opcode:  "QUERY",
 		flags:   []string{"rd", "ra"},
 		rcode:   "NOERROR",
-		q_class: "IN",
-		q_type:  "A",
-		q_name:  "elastic.co.",
-		q_etld:  "elastic.co.",
+		qClass:  "IN",
+		qType:   "A",
+		qName:   "elastic.co",
+		qEtld:   "elastic.co",
 		answers: []string{"54.148.130.30", "54.69.104.66"},
 		request: []byte{
 			0x21, 0x51, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x6c, 0x61,
@@ -69,17 +81,16 @@ var (
 		},
 	}
 
-	zoneIxfr = DnsTestMessage{
+	zoneIxfr = dnsTestMessage{
 		id:      16384,
 		opcode:  "QUERY",
 		flags:   []string{"ra"},
 		rcode:   "NOERROR",
-		q_class: "IN",
-		q_type:  "IXFR",
-		q_name:  "etas.com.",
-		q_etld:  "etas.com.",
-		answers: []string{"training2003p.", "training2003p.", "training2003p.",
-			"training2003p.", "1.1.1.100"},
+		qClass:  "IN",
+		qType:   "IXFR",
+		qName:   "etas.com",
+		qEtld:   "etas.com",
+		answers: []string{"training2003p", "training2003p", "training2003p", "training2003p", "1.1.1.100"},
 		request: []byte{
 			0x40, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x04, 0x65, 0x74, 0x61,
 			0x73, 0x03, 0x63, 0x6f, 0x6d, 0x00, 0x00, 0xfb, 0x00, 0x01, 0xc0, 0x0c, 0x00, 0x06, 0x00, 0x01,
@@ -106,20 +117,20 @@ var (
 		},
 	}
 
-	githubPtr = DnsTestMessage{
+	githubPtr = dnsTestMessage{
 		id:      344,
 		opcode:  "QUERY",
 		flags:   []string{"rd", "ra"},
 		rcode:   "NOERROR",
-		q_class: "IN",
-		q_type:  "PTR",
-		q_name:  "131.252.30.192.in-addr.arpa.",
-		q_etld:  "192.in-addr.arpa.",
-		answers: []string{"github.com."},
-		authorities: []string{"a.root-servers.net.", "b.root-servers.net.", "c.root-servers.net.",
-			"d.root-servers.net.", "e.root-servers.net.", "f.root-servers.net.", "g.root-servers.net.",
-			"h.root-servers.net.", "i.root-servers.net.", "j.root-servers.net.", "k.root-servers.net.",
-			"l.root-servers.net.", "m.root-servers.net."},
+		qClass:  "IN",
+		qType:   "PTR",
+		qName:   "131.252.30.192.in-addr.arpa",
+		qEtld:   "192.in-addr.arpa",
+		answers: []string{"github.com"},
+		authorities: []string{"a.root-servers.net", "b.root-servers.net", "c.root-servers.net",
+			"d.root-servers.net", "e.root-servers.net", "f.root-servers.net", "g.root-servers.net",
+			"h.root-servers.net", "i.root-servers.net", "j.root-servers.net", "k.root-servers.net",
+			"l.root-servers.net", "m.root-servers.net"},
 		request: []byte{
 			0x01, 0x58, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x33, 0x31,
 			0x03, 0x32, 0x35, 0x32, 0x02, 0x33, 0x30, 0x03, 0x31, 0x39, 0x32, 0x07, 0x69, 0x6e, 0x2d, 0x61,
@@ -147,17 +158,17 @@ var (
 		},
 	}
 
-	sophosTxt = DnsTestMessage{
-		id:      8238,
-		opcode:  "QUERY",
-		flags:   []string{"rd", "ra"},
-		rcode:   "NXDOMAIN",
-		q_class: "IN",
-		q_type:  "TXT",
-		q_name: "3.1o19ss00s2s17s4qp375sp49r830n2n4n923s8839052s7p7768s53365226pp3.659p1r741os37393" +
+	sophosTxt = dnsTestMessage{
+		id:     8238,
+		opcode: "QUERY",
+		flags:  []string{"rd", "ra"},
+		rcode:  "NXDOMAIN",
+		qClass: "IN",
+		qType:  "TXT",
+		qName: "3.1o19ss00s2s17s4qp375sp49r830n2n4n923s8839052s7p7768s53365226pp3.659p1r741os37393" +
 			"648s2348o762q1066q53rq5p4614r1q4781qpr16n809qp4.879o3o734q9sns005o3pp76q83.2q65qns3spns" +
-			"1081s5rn5sr74opqrqnpq6rn3ro5.i.00.mac.sophosxl.net.",
-		q_etld: "sophosxl.net.",
+			"1081s5rn5sr74opqrqnpq6rn3ro5.i.00.mac.sophosxl.net",
+		qEtld: "sophosxl.net",
 		request: []byte{
 			0x20, 0x2e, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x33, 0x3f, 0x31,
 			0x6f, 0x31, 0x39, 0x73, 0x73, 0x30, 0x30, 0x73, 0x32, 0x73, 0x31, 0x37, 0x73, 0x34, 0x71, 0x70,
@@ -194,15 +205,15 @@ var (
 		},
 	}
 
-	ednsSecA = DnsTestMessage{
+	ednsSecA = dnsTestMessage{
 		id:      20498,
 		opcode:  "QUERY",
 		flags:   []string{"rd", "ad", "ra"},
 		rcode:   "NOERROR",
-		q_class: "IN",
-		q_type:  "A",
-		q_name:  "www.ietf.org.",
-		q_etld:  "ietf.org.",
+		qClass:  "IN",
+		qType:   "A",
+		qName:   "www.ietf.org",
+		qEtld:   "ietf.org",
 		answers: []string{"64.170.98.30", "iDA8bJnrAEz3jgYnyFRm567a76qlv1V0CqxOSd/o9nvnN0GlZLaVoDmuXpaIaoypbGxwzwgK/LY6CV2k6SWKwicBmpENL26hwyjkFzPDW8kX3ibFhtfsOb8pYe7nBj326actp/7iG+DRuDmPnkYBja+wDYk61doTtkqZg57fn3iS97tjNPCC9C9knRAuDYUG+dVxalazSwYrpvY97dUC1H2spD0g4UdDyCbGA46mouZ4GPzNMewgf948qxrnU8pWPk3nQW5TgLVkGoWgco2owfLElBqf6rJ4LOswuhaw8IpTtmw3FsixxTLQvKOE5nftd1nMhQQd9CaHjoKNAUEz5Q=="},
 		request: []byte{
 			0x50, 0x12, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x77, 0x77, 0x77,
@@ -239,21 +250,20 @@ var (
 
 // Verify that an empty packet is safely handled (no panics).
 func TestParseUdp_emptyPacket(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	store := &eventStore{}
+	dns := newDNS(store, testing.Verbose())
 	packet := newPacket(forward, []byte{})
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
-	client := dns.results.(*publish.ChanTransactions)
-	close(client.Channel)
-	assert.Nil(t, <-client.Channel, "No result should have been published.")
+	assert.True(t, store.empty(), "No result should have been published.")
 }
 
 // Verify that a malformed packet is safely handled (no panics).
 func TestParseUdp_malformedPacket(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	dns := newDNS(nil, testing.Verbose())
 	garbage := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 	packet := newPacket(forward, garbage)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
 
 	// As a future addition, a malformed message should publish a result.
@@ -261,30 +271,30 @@ func TestParseUdp_malformedPacket(t *testing.T) {
 
 // Verify that the lone request packet is parsed.
 func TestParseUdp_requestPacket(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	store := &eventStore{}
+	dns := newDNS(store, testing.Verbose())
 	packet := newPacket(forward, elasticA.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
-	client := dns.results.(*publish.ChanTransactions)
-	close(client.Channel)
-	assert.Nil(t, <-client.Channel, "No result should have been published.")
+	assert.True(t, store.empty(), "No result should have been published.")
 }
 
 // Verify that the lone response packet is parsed and that an error
 // result is published.
 func TestParseUdp_responseOnly(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 	q := elasticA
 	packet := newPacket(reverse, q.response)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Nil(t, mapValue(t, m, "bytes_in"))
-	assert.Equal(t, len(q.response), mapValue(t, m, "bytes_out"))
-	assert.Nil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.Nil(t, mapValue(t, m, "source.bytes"))
+	assert.EqualValues(t, len(q.response), mapValue(t, m, "destination.bytes"))
+	assert.Nil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
-	assert.Equal(t, OrphanedResponse.Error(), mapValue(t, m, "notes"))
+	assert.Equal(t, orphanedResponse.Error(), mapValue(t, m, "error.message"))
 	assertMapStrData(t, m, q)
 }
 
@@ -292,172 +302,180 @@ func TestParseUdp_responseOnly(t *testing.T) {
 // the status is error. This second packet will remain in the transaction
 // map awaiting a response.
 func TestParseUdp_duplicateRequests(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 	q := elasticA
 	packet := newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
 	packet = newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Equal(t, len(q.request), mapValue(t, m, "bytes_in"))
-	assert.Nil(t, mapValue(t, m, "bytes_out"))
-	assert.Nil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.EqualValues(t, len(q.request), mapValue(t, m, "source.bytes"))
+	assert.Nil(t, mapValue(t, m, "destination.bytes"))
+	assert.Nil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
-	assert.Equal(t, DuplicateQueryMsg.Error(), mapValue(t, m, "notes"))
+	assert.Equal(t, duplicateQueryMsg.Error(), mapValue(t, m, "error.message"))
 }
 
 // Verify that the request/response pair are parsed and that a result
 // is published.
 func TestParseUdp_requestResponse(t *testing.T) {
-	parseUdpRequestResponse(t, newDns(testing.Verbose()), elasticA)
+	store := &eventStore{}
+	dns := newDNS(store, testing.Verbose())
+	parseUDPRequestResponse(t, dns, store, elasticA)
 }
 
 // Verify all DNS test messages are parsed correctly.
 func TestParseUdp_allTestMessages(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	store := &eventStore{}
+	dns := newDNS(store, testing.Verbose())
 	for _, q := range messages {
-		t.Logf("Testing with query for %s", q.q_name)
-		parseUdpRequestResponse(t, dns, q)
+		t.Logf("Testing with query for %s", q.qName)
+		store.events = nil
+		parseUDPRequestResponse(t, dns, store, q)
 	}
 }
 
 // Verify that expireTransaction publishes an event with an error status
 // and note.
 func TestExpireTransaction(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 
-	trans := newTransaction(time.Now(), DnsTuple{}, common.CmdlineTuple{})
-	trans.Request = &DnsMessage{
-		Data: &mkdns.Msg{
+	trans := newTransaction(time.Now(), dnsTuple{}, common.ProcessTuple{})
+	trans.request = &dnsMessage{
+		data: &mkdns.Msg{
 			Question: []mkdns.Question{{}},
 		},
 	}
 	dns.expireTransaction(trans)
 
-	m := expectResult(t, dns)
-	assert.Nil(t, mapValue(t, m, "bytes_out"))
-	assert.Nil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Nil(t, mapValue(t, m, "destination.bytes"))
+	assert.Nil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
-	assert.Equal(t, NoResponse.Error(), mapValue(t, m, "notes"))
+	assert.Equal(t, noResponse.Error(), mapValue(t, m, "error.message"))
 }
 
 // Verify that an empty DNS request packet can be published.
 func TestPublishTransaction_emptyDnsRequest(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 
-	trans := newTransaction(time.Now(), DnsTuple{}, common.CmdlineTuple{})
-	trans.Request = &DnsMessage{
-		Data: &mkdns.Msg{},
+	trans := newTransaction(time.Now(), dnsTuple{}, common.ProcessTuple{})
+	trans.request = &dnsMessage{
+		data: &mkdns.Msg{},
 	}
 	dns.publishTransaction(trans)
 
-	m := expectResult(t, dns)
+	m := expectResult(t, results)
 	assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
 }
 
 // Verify that an empty DNS response packet can be published.
 func TestPublishTransaction_emptyDnsResponse(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 
-	trans := newTransaction(time.Now(), DnsTuple{}, common.CmdlineTuple{})
-	trans.Response = &DnsMessage{
-		Data: &mkdns.Msg{},
+	trans := newTransaction(time.Now(), dnsTuple{}, common.ProcessTuple{})
+	trans.response = &dnsMessage{
+		data: &mkdns.Msg{},
 	}
 	dns.publishTransaction(trans)
 
-	m := expectResult(t, dns)
+	m := expectResult(t, results)
 	assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
 }
 
 func TestPublishTransaction_edns(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 	q := ednsSecA
 	packet := newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
 	packet = newPacket(reverse, q.response)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Equal(t, len(q.request), mapValue(t, m, "bytes_in"))
-	assert.Equal(t, len(q.response), mapValue(t, m, "bytes_out"))
-	assert.NotNil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.EqualValues(t, len(q.request), mapValue(t, m, "source.bytes"))
+	assert.EqualValues(t, len(q.response), mapValue(t, m, "destination.bytes"))
+	assert.NotNil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.OK_STATUS, mapValue(t, m, "status"))
-	assert.Nil(t, mapValue(t, m, "notes"))
+	assert.Nil(t, mapValue(t, m, "error.message"))
 	assertMapStrData(t, m, q)
 }
 
 // Verify that a non-edns answer to a edns query publishes Notes.
 func TestPublishTransaction_respEdnsNoSupport(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 	q := ednsSecA
 	q.response = q.response[:len(q.response)-11] // Remove OPT RR
 
 	packet := newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
 	packet = newPacket(reverse, q.response)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Equal(t, len(q.request), mapValue(t, m, "bytes_in"))
-	assert.Equal(t, len(q.response), mapValue(t, m, "bytes_out"))
-	assert.NotNil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.EqualValues(t, len(q.request), mapValue(t, m, "source.bytes"))
+	assert.EqualValues(t, len(q.response), mapValue(t, m, "destination.bytes"))
+	assert.NotNil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.OK_STATUS, mapValue(t, m, "status"))
-	assert.Equal(t, RespEdnsNoSupport.Error(), mapValue(t, m, "notes"))
+	assert.Equal(t, respEdnsNoSupport.Error(), mapValue(t, m, "error.message"))
 	assertRequest(t, m, q)
 }
 
 // Verify that a edns response to a non-edns query publishes Notes.
 func TestPublishTransaction_respEdnsUnexpected(t *testing.T) {
-	dns := newDns(testing.Verbose())
+	results := &eventStore{}
+	dns := newDNS(results, testing.Verbose())
 	q := ednsSecA
 	q.request = q.request[:len(q.request)-11] // Remove OPT RR
 
 	packet := newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Equal(t, 1, dns.transactions.Size(), "There should be one transaction.")
 	packet = newPacket(reverse, q.response)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Equal(t, len(q.request), mapValue(t, m, "bytes_in"))
-	assert.Equal(t, len(q.response), mapValue(t, m, "bytes_out"))
-	assert.NotNil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.EqualValues(t, len(q.request), mapValue(t, m, "source.bytes"))
+	assert.EqualValues(t, len(q.response), mapValue(t, m, "destination.bytes"))
+	assert.NotNil(t, mapValue(t, m, "event.duration"))
 	assert.Equal(t, common.OK_STATUS, mapValue(t, m, "status"))
-	assert.Equal(t, RespEdnsUnexpected.Error(), mapValue(t, m, "notes"))
+	assert.Equal(t, respEdnsUnexpected.Error(), mapValue(t, m, "error.message"))
 	assertMapStrData(t, m, q)
 }
 
 // Benchmarks UDP parsing for the given test message.
-func benchmarkUdp(b *testing.B, q DnsTestMessage) {
-	dns := newDns(false)
+func benchmarkUDP(b *testing.B, q dnsTestMessage) {
+	dns := newDNS(nil, false)
 	for i := 0; i < b.N; i++ {
 		packet := newPacket(forward, q.request)
-		dns.ParseUdp(packet)
+		dns.ParseUDP(packet)
 		packet = newPacket(reverse, q.response)
-		dns.ParseUdp(packet)
-
-		client := dns.results.(*publish.ChanTransactions)
-		<-client.Channel
+		dns.ParseUDP(packet)
 	}
 }
 
 // Benchmark UDP parsing against each test message.
-func BenchmarkUdpElasticA(b *testing.B)  { benchmarkUdp(b, elasticA) }
-func BenchmarkUdpZoneIxfr(b *testing.B)  { benchmarkUdp(b, zoneIxfr) }
-func BenchmarkUdpGithubPtr(b *testing.B) { benchmarkUdp(b, githubPtr) }
-func BenchmarkUdpSophosTxt(b *testing.B) { benchmarkUdp(b, sophosTxt) }
+func BenchmarkUdpElasticA(b *testing.B)  { benchmarkUDP(b, elasticA) }
+func BenchmarkUdpZoneIxfr(b *testing.B)  { benchmarkUDP(b, zoneIxfr) }
+func BenchmarkUdpGithubPtr(b *testing.B) { benchmarkUDP(b, githubPtr) }
+func BenchmarkUdpSophosTxt(b *testing.B) { benchmarkUDP(b, sophosTxt) }
 
 // Benchmark that runs with parallelism to help find concurrency related
 // issues. To run with parallelism, the 'go test' cpu flag must be set
@@ -465,18 +483,7 @@ func BenchmarkUdpSophosTxt(b *testing.B) { benchmarkUdp(b, sophosTxt) }
 func BenchmarkParallelUdpParse(b *testing.B) {
 	rand.Seed(22)
 	numMessages := len(messages)
-	dns := newDns(false)
-	client := dns.results.(*publish.ChanTransactions)
-
-	// Drain the results channal while the test is running.
-	go func() {
-		totalMessages := 0
-		for r := range client.Channel {
-			_ = r
-			totalMessages++
-		}
-		fmt.Printf("Parsed %d messages.\n", totalMessages)
-	}()
+	dns := newDNS(nil, false)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -490,27 +497,26 @@ func BenchmarkParallelUdpParse(b *testing.B) {
 			} else {
 				packet = newPacket(reverse, q.response)
 			}
-			dns.ParseUdp(packet)
+			dns.ParseUDP(packet)
 		}
 	})
-
-	defer close(client.Channel)
 }
 
 // parseUdpRequestResponse parses a request then a response packet and validates
 // the published result.
-func parseUdpRequestResponse(t testing.TB, dns *Dns, q DnsTestMessage) {
+func parseUDPRequestResponse(t testing.TB, dns *dnsPlugin, results *eventStore, q dnsTestMessage) {
+	t.Helper()
 	packet := newPacket(forward, q.request)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	packet = newPacket(reverse, q.response)
-	dns.ParseUdp(packet)
+	dns.ParseUDP(packet)
 	assert.Empty(t, dns.transactions.Size(), "There should be no transactions.")
 
-	m := expectResult(t, dns)
-	assert.Equal(t, "udp", mapValue(t, m, "transport"))
-	assert.Equal(t, len(q.request), mapValue(t, m, "bytes_in"))
-	assert.Equal(t, len(q.response), mapValue(t, m, "bytes_out"))
-	assert.NotNil(t, mapValue(t, m, "responsetime"))
+	m := expectResult(t, results)
+	assert.Equal(t, "udp", mapValue(t, m, "network.transport"))
+	assert.EqualValues(t, len(q.request), mapValue(t, m, "source.bytes"))
+	assert.EqualValues(t, len(q.response), mapValue(t, m, "destination.bytes"))
+	assert.NotNil(t, mapValue(t, m, "event.duration"))
 
 	if assert.ObjectsAreEqual("NOERROR", mapValue(t, m, "dns.response_code")) {
 		assert.Equal(t, common.OK_STATUS, mapValue(t, m, "status"))
@@ -518,6 +524,6 @@ func parseUdpRequestResponse(t testing.TB, dns *Dns, q DnsTestMessage) {
 		assert.Equal(t, common.ERROR_STATUS, mapValue(t, m, "status"))
 	}
 
-	assert.Nil(t, mapValue(t, m, "notes"))
+	assert.Nil(t, mapValue(t, m, "error.message"))
 	assertMapStrData(t, m, q)
 }

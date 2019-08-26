@@ -1,26 +1,44 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 package mongodb
 
 // Represent a mongodb message being parsed
 import (
+	"fmt"
 	"time"
 
 	"github.com/elastic/beats/libbeat/common"
 )
 
 type mongodbMessage struct {
-	Ts time.Time
+	ts time.Time
 
-	TcpTuple     common.TcpTuple
-	CmdlineTuple *common.CmdlineTuple
-	Direction    uint8
+	tcpTuple     common.TCPTuple
+	cmdlineTuple *common.ProcessTuple
+	direction    uint8
 
-	IsResponse      bool
-	ExpectsResponse bool
+	isResponse      bool
+	expectsResponse bool
 
 	// Standard message header fields from mongodb wire protocol
 	// see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#standard-message-header
 	messageLength int
-	requestId     int
+	requestID     int
 	responseTo    int
 	opCode        opCode
 
@@ -40,7 +58,7 @@ type mongodbMessage struct {
 
 // Represent a stream being parsed that contains a mongodb message
 type stream struct {
-	tcptuple *common.TcpTuple
+	tcptuple *common.TCPTuple
 
 	data    []byte
 	message *mongodbMessage
@@ -55,25 +73,21 @@ func (st *stream) PrepareForNewMessage() {
 // The private data of a parser instance
 // is composed of 2 potentially active streams: incoming, outgoing
 type mongodbConnectionData struct {
-	Streams [2]*stream
+	streams [2]*stream
 }
 
 // Represent a full mongodb transaction (request/reply)
 // These transactions are the end product of this parser
 type transaction struct {
-	Type         string
-	tuple        common.TcpTuple
-	cmdline      *common.CmdlineTuple
-	Src          common.Endpoint
-	Dst          common.Endpoint
-	ResponseTime int32
-	Ts           int64
-	JsTs         time.Time
-	ts           time.Time
-	BytesOut     int
-	BytesIn      int
+	cmdline  *common.ProcessTuple
+	src      common.Endpoint
+	dst      common.Endpoint
+	ts       time.Time
+	endTime  time.Time
+	bytesOut int
+	bytesIn  int
 
-	Mongodb common.MapStr
+	mongodb common.MapStr
 
 	event     common.MapStr
 	method    string
@@ -83,11 +97,18 @@ type transaction struct {
 	documents []interface{}
 }
 
+type msgKind byte
+
+const (
+	msgKindBody             msgKind = 0
+	msgKindDocumentSequence msgKind = 1
+)
+
 type opCode int32
 
 const (
 	opReply      opCode = 1
-	opMsg        opCode = 1000
+	opMsgLegacy  opCode = 1000
 	opUpdate     opCode = 2001
 	opInsert     opCode = 2002
 	opReserved   opCode = 2003
@@ -95,6 +116,7 @@ const (
 	opGetMore    opCode = 2005
 	opDelete     opCode = 2006
 	opKillCursor opCode = 2007
+	opMsg        opCode = 2013
 )
 
 // List of valid mongodb wire protocol operation codes
@@ -109,6 +131,7 @@ var opCodeNames = map[opCode]string{
 	2005: "OP_GET_MORE",
 	2006: "OP_DELETE",
 	2007: "OP_KILL_CURSORS",
+	2013: "OP_MSG",
 }
 
 func validOpcode(o opCode) bool {
@@ -117,7 +140,10 @@ func validOpcode(o opCode) bool {
 }
 
 func (o opCode) String() string {
-	return opCodeNames[o]
+	if name, found := opCodeNames[o]; found {
+		return name
+	}
+	return fmt.Sprintf("(value=%d)", int32(o))
 }
 
 func awaitsReply(c opCode) bool {
@@ -129,7 +155,7 @@ func awaitsReply(c opCode) bool {
 //
 // This list was obtained by calling db.listCommands() and some grepping.
 // They are compared cased insensitive
-var DatabaseCommands = []string{
+var databaseCommands = []string{
 	"getLastError",
 	"connPoolSync",
 	"top",

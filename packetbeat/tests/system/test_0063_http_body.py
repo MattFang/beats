@@ -28,8 +28,8 @@ class Test(BaseTest):
         assert o["http.request.headers"]["content-type"] == "application/x-www-form-urlencoded"
         assert o["http.response.headers"]["content-type"] == "text/html; charset=utf-8"
 
-        assert len(o["http.request.body"]) > 0
-        assert "http.response.body" not in o
+        assert len(o["http.request.body.content"]) > 0
+        assert "http.response.body.content" not in o
 
         # without body
         assert len(o["response"]) == 172
@@ -56,8 +56,8 @@ class Test(BaseTest):
         assert o["http.request.headers"]["content-type"] == "application/x-www-form-urlencoded"
         assert o["http.response.headers"]["content-type"] == "text/html; charset=utf-8"
 
-        assert len(o["http.request.body"]) > 0
-        assert len(o["http.response.body"]) > 0
+        assert len(o["http.request.body.content"]) > 0
+        assert len(o["http.response.body.content"]) > 0
 
         assert "request" not in o
         assert "response" not in o
@@ -77,16 +77,38 @@ class Test(BaseTest):
 
         assert len(objs) == 1
         o = objs[0]
-        print o
+        print(o)
 
         assert o["type"] == "http"
 
         assert o["http.request.headers"]["content-type"] == "application/x-www-form-urlencoded; charset=UTF-8"
         assert o["http.response.headers"]["content-type"] == "application/json; charset=UTF-8"
 
-        assert o["http.request.params"] == "%7B+%22query%22%3A+%7B+%22match_all%22%3A+%7B%7D%7D%7D%0A="
-        assert len(o["http.request.body"]) > 0
-        assert len(o["http.response.body"]) > 0
+        assert o["url.query"] == "%7B+%22query%22%3A+%7B+%22match_all%22%3A+%7B%7D%7D%7D%0A="
+        assert len(o["http.request.body.content"]) > 0
+        assert len(o["http.response.body.content"]) > 0
 
         assert "request" not in o
         assert "response" not in o
+
+    def test_large_body(self):
+        """
+        Checks that the transaction is still created if the
+        message is larger than the max_message_size.
+        """
+        self.render_config_template(
+            http_include_body_for=["binary"],
+            http_ports=[8000],
+            http_max_message_size=1024
+        )
+        self.run_packetbeat(pcap="http_get_2k_file.pcap",
+                            debug_selectors=["*"])
+        objs = self.read_output()
+
+        assert len(objs) == 1
+        o = objs[0]
+        print(len(o["http.response.body.content"]))
+
+        # response body should be included but trimmed
+        assert len(o["http.response.body.content"]) < 2000
+        assert len(o["http.response.body.content"]) > 500

@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package memcache
@@ -7,17 +24,18 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 )
 
 type memcacheTest struct {
-	mc           *Memcache
+	mc           *memcache
 	transactions []*transaction
 }
 
 func newMemcacheTest(config memcacheConfig) *memcacheTest {
 	mct := &memcacheTest{}
-	mc := &Memcache{}
+	mc := &memcache{}
 	mc.init(nil, &config)
 	mc.handler = mct
 	mct.mc = mc
@@ -30,10 +48,10 @@ func (mct *memcacheTest) onTransaction(t *transaction) {
 
 func (mct *memcacheTest) genTransaction(requ, resp *message) *transaction {
 	if requ != nil {
-		requ.CmdlineTuple = &common.CmdlineTuple{}
+		requ.CmdlineTuple = &common.ProcessTuple{}
 	}
 	if resp != nil {
-		resp.CmdlineTuple = &common.CmdlineTuple{}
+		resp.CmdlineTuple = &common.ProcessTuple{}
 	}
 
 	t := newTransaction(requ, resp)
@@ -56,15 +74,17 @@ func makeBinMessage(
 }
 
 func makeTransactionEvent(t *testing.T, trans *transaction) common.MapStr {
-	event := common.MapStr{}
-	err := trans.Event(event)
+	event := beat.Event{
+		Fields: common.MapStr{},
+	}
+	err := trans.Event(&event)
 	if err != nil {
 		t.Fatalf("serializing transaction failed with: %v", err)
 	}
-	return event
+	return event.Fields
 }
 
-func Test_TryMergeUnmergeableRespnses(t *testing.T) {
+func Test_TryMergeUnmergeableResponses(t *testing.T) {
 	mct := newMemcacheTest(defaultConfig)
 	msg1 := textParseNoFail(t, "STORED\r\n")
 	msg2 := textParseNoFail(t, "0\r\n")
@@ -170,7 +190,7 @@ func Test_MergeTextValueResponsesNoLimits(t *testing.T) {
 	msg := msg1
 	assert.Equal(t, "k1", msg.keys[0].String())
 	assert.Equal(t, "k2", msg.keys[1].String())
-	assert.Equal(t, uint32(2), msg.count_values)
+	assert.Equal(t, uint32(2), msg.countValues)
 	assert.Equal(t, "value1", msg.values[0].String())
 	assert.Equal(t, "value2", msg.values[1].String())
 }
@@ -197,7 +217,7 @@ func Test_MergeTextValueResponsesWithLimits(t *testing.T) {
 	msg := msg1
 	assert.Equal(t, "k1", msg.keys[0].String())
 	assert.Equal(t, "k2", msg.keys[1].String())
-	assert.Equal(t, uint32(2), msg.count_values)
+	assert.Equal(t, uint32(2), msg.countValues)
 	assert.Equal(t, 1, len(msg.values))
 	assert.Equal(t, "value1", msg.values[0].String())
 }

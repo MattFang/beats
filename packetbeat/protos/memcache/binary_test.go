@@ -1,3 +1,20 @@
+// Licensed to Elasticsearch B.V. under one or more contributor
+// license agreements. See the NOTICE file distributed with
+// this work for additional information regarding copyright
+// ownership. Elasticsearch B.V. licenses this file to you under
+// the Apache License, Version 2.0 (the "License"); you may
+// not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 // +build !integration
 
 package memcache
@@ -16,7 +33,7 @@ func Test_BinParseQuitCommand(t *testing.T) {
 
 	msg := binParseNoFail(t, buf.Bytes())
 	assert.NotNil(t, msg)
-	assert.Equal(t, MemcacheCmdQuit, msg.command.code)
+	assert.Equal(t, memcacheCmdQuit, msg.command.code)
 	assert.False(t, msg.isQuiet)
 
 	buf, _ = prepareBinMessage(
@@ -25,7 +42,7 @@ func Test_BinParseQuitCommand(t *testing.T) {
 		noKey, noValue)
 	msg = binParseNoFail(t, buf.Bytes())
 	assert.NotNil(t, msg)
-	assert.Equal(t, MemcacheCmdQuit, msg.command.code)
+	assert.Equal(t, memcacheCmdQuit, msg.command.code)
 	assert.True(t, msg.isQuiet)
 }
 
@@ -42,7 +59,7 @@ func Test_BinSimpleGetCommand(t *testing.T) {
 		extras(), key("key"), noValue)
 	msg := binParseNoFail(t, buf.Bytes())
 	assert.NotNil(t, msg)
-	assert.Equal(t, MemcacheCmdGet, msg.command.code)
+	assert.Equal(t, memcacheCmdGet, msg.command.code)
 	assert.Equal(t, 1, len(msg.keys))
 	assert.Equal(t, "key", msg.keys[0].String())
 
@@ -58,7 +75,7 @@ func Test_BinSimpleGetCommand(t *testing.T) {
 		extras(extra32Bit(1)), noKey, value("value"))
 	msg = binParseNoFail(t, buf.Bytes())
 	assert.NotNil(t, msg)
-	assert.Equal(t, MemcacheCmdGet, msg.command.code)
+	assert.Equal(t, memcacheCmdGet, msg.command.code)
 	assert.Equal(t, uint16(statusCodeNoError), msg.status)
 	assert.True(t, msg.isCas)
 	assert.Equal(t, uint64(1234), msg.casUnique)
@@ -80,7 +97,7 @@ func Test_BinParseSet(t *testing.T) {
 		value("value"))
 	msg := binParseNoFail(t, buf.Bytes())
 	assert.NotNil(t, msg)
-	assert.Equal(t, MemcacheCmdSet, msg.command.code)
+	assert.Equal(t, memcacheCmdSet, msg.command.code)
 	assert.Equal(t, "key", msg.keys[0].String())
 	assert.Equal(t, uint32(0x1f2f), msg.flags)
 	assert.Equal(t, uint32(0x11223344), msg.exptime)
@@ -115,7 +132,7 @@ func Test_BinParsetSetCont(t *testing.T) {
 	msg = p.parseNoFail(buf.Bytes()[37:])
 	assert.NotNil(t, msg)
 
-	assert.Equal(t, MemcacheCmdSet, msg.command.code)
+	assert.Equal(t, memcacheCmdSet, msg.command.code)
 	assert.Equal(t, "key", msg.keys[0].String())
 	assert.Equal(t, uint32(0x1f2f), msg.flags)
 	assert.Equal(t, uint32(0x11223344), msg.exptime)
@@ -185,5 +202,5 @@ func Test_BinParseStatInvalidResponse(t *testing.T) {
 		extras(), noKey, value("abc"))
 	msg, err := binTryParse(t, buf.Bytes())
 	assert.Nil(t, msg)
-	assert.Equal(t, ErrExpectedKeys, err)
+	assert.Equal(t, errExpectedKeys, err)
 }
